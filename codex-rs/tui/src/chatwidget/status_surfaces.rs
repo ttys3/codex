@@ -71,6 +71,11 @@ impl StatusSurfaceSelections {
         self.status_line_items
             .contains(&StatusLineItem::WorkspaceHeadline)
     }
+
+    fn uses_custom_command(&self) -> bool {
+        self.status_line_items
+            .contains(&StatusLineItem::CustomCommand)
+    }
 }
 
 /// Cached project-root display name keyed by the cwd used for the last lookup.
@@ -172,6 +177,8 @@ impl ChatWidget {
         } else {
             self.request_status_line_workspace_headline_if_due(Instant::now());
         }
+
+        self.sync_status_line_command_state(selections.uses_custom_command(), Instant::now());
     }
 
     fn refresh_status_line_from_selections(&mut self, selections: &StatusSurfaceSelections) {
@@ -680,6 +687,7 @@ impl ChatWidget {
             StatusLineItem::Status => Some(self.run_state_status_text()),
             StatusLineItem::Permissions => Some(permissions_display(&self.config)),
             StatusLineItem::ApprovalMode => Some(approval_mode_display(&self.config)),
+            StatusLineItem::CustomCommand => self.status_line_command_output.clone(),
             StatusLineItem::UsedTokens => {
                 let usage = self.status_line_total_usage();
                 let total = usage.blended_total();
@@ -776,6 +784,7 @@ impl ChatWidget {
             StatusSurfacePreviewItem::BranchChanges => StatusLineItem::BranchChanges,
             StatusSurfacePreviewItem::Permissions => StatusLineItem::Permissions,
             StatusSurfacePreviewItem::ApprovalMode => StatusLineItem::ApprovalMode,
+            StatusSurfacePreviewItem::CustomCommand => StatusLineItem::CustomCommand,
             StatusSurfacePreviewItem::ContextRemaining => StatusLineItem::ContextRemaining,
             StatusSurfacePreviewItem::ContextUsed => StatusLineItem::ContextUsed,
             StatusSurfacePreviewItem::FiveHourLimit => StatusLineItem::FiveHourLimit,

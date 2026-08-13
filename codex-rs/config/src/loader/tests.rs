@@ -11,6 +11,35 @@ use codex_utils_path_uri::PathUri;
 use pretty_assertions::assert_eq;
 use tempfile::tempdir;
 
+#[test]
+fn project_status_line_command_is_ignored_without_removing_status_line_items() {
+    let mut config: TomlValue = toml::from_str(
+        r#"
+[tui]
+status_line = ["model", "custom-command"]
+
+[tui.status_line_command]
+command = ["sh", "-c", "printf unsafe"]
+"#,
+    )
+    .expect("project config TOML");
+
+    assert_eq!(
+        sanitize_project_config(&mut config),
+        vec!["tui.status_line_command".to_string()]
+    );
+    assert_eq!(
+        config
+            .get("tui")
+            .and_then(TomlValue::as_table)
+            .and_then(|tui| tui.get("status_line")),
+        Some(&TomlValue::Array(vec![
+            TomlValue::String("model".to_string()),
+            TomlValue::String("custom-command".to_string()),
+        ]))
+    );
+}
+
 struct TestFileSystem;
 
 impl ExecutorFileSystem for TestFileSystem {

@@ -2764,6 +2764,113 @@ async fn status_line_context_used_renders_labeled_percent() {
 }
 
 #[tokio::test]
+async fn status_line_custom_command_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.tui_status_line = Some(vec!["custom-command".to_string()]);
+    chat.config.tui_status_line_command = Some(codex_config::types::StatusLineCommandConfig {
+        command: vec!["status-helper".to_string()],
+        timeout_ms: 1_000,
+        refresh_interval_ms: 5_000,
+    });
+    chat.refresh_status_line();
+    chat.status_line_command_output = Some("collector healthy".to_string());
+    chat.refresh_status_line();
+
+    let width = 64;
+    let height = chat.desired_height(width);
+    let mut terminal =
+        ratatui::Terminal::new(TestBackend::new(width, height)).expect("create terminal");
+    terminal
+        .draw(|frame| chat.render(frame.area(), frame.buffer_mut()))
+        .expect("render status line extensions");
+
+    assert_chatwidget_snapshot!(
+        "status_line_custom_command",
+        normalized_backend_snapshot(terminal.backend())
+    );
+}
+
+#[derive(Default)]
+struct RecordingStatusLineCommandRunner {
+    command: std::sync::Mutex<Option<crate::workspace_command::WorkspaceCommand>>,
+}
+
+impl crate::workspace_command::WorkspaceCommandExecutor for RecordingStatusLineCommandRunner {
+    fn run(
+        &self,
+        command: crate::workspace_command::WorkspaceCommand,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        crate::workspace_command::WorkspaceCommandOutput,
+                        crate::workspace_command::WorkspaceCommandError,
+                    >,
+                > + Send
+                + '_,
+        >,
+    > {
+        *self.command.lock().expect("command lock") = Some(command);
+        Box::pin(async {
+            Ok(crate::workspace_command::WorkspaceCommandOutput {
+                exit_code: 0,
+                stdout: "\u{1b}[32mready\u{1b}[0m\nignored".to_string(),
+                stderr: String::new(),
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn status_line_command_runs_through_workspace_runner() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let runner = std::sync::Arc::new(RecordingStatusLineCommandRunner::default());
+    chat.workspace_command_runner = Some(runner.clone());
+    chat.config.tui_status_line_command = Some(codex_config::types::StatusLineCommandConfig {
+        command: vec!["status-helper".to_string(), "--short".to_string()],
+        timeout_ms: 750,
+        refresh_interval_ms: 2_000,
+    });
+    chat.config.otel.exporter = codex_config::types::OtelExporterKind::OtlpGrpc {
+        endpoint: "http://collector:4317".to_string(),
+        headers: HashMap::new(),
+        tls: None,
+    };
+
+    chat.sync_status_line_command_state(/*enabled*/ true, Instant::now());
+
+    let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("status command event timeout")
+        .expect("status command event");
+    let AppEvent::StatusLineCommandUpdated { request_id, result } = event else {
+        panic!("unexpected app event");
+    };
+    assert_eq!(result, Ok(Some("ready".to_string())));
+    assert!(chat.set_status_line_command_output(request_id, result));
+    assert_eq!(chat.status_line_command_output.as_deref(), Some("ready"));
+
+    let command = runner
+        .command
+        .lock()
+        .expect("command lock")
+        .clone()
+        .expect("recorded command");
+    assert_eq!(command.argv, ["status-helper", "--short"]);
+    assert_eq!(command.cwd.as_deref(), Some(chat.config.cwd.as_path()));
+    assert_eq!(command.timeout, Duration::from_millis(750));
+    assert_eq!(command.output_bytes_cap, 4 * 1024);
+    assert!(!command.disable_output_cap);
+    assert_eq!(
+        command
+            .env
+            .get("CODEX_STATUS_OTEL_ENABLED")
+            .and_then(Option::as_deref),
+        Some("1")
+    );
+}
+
+#[tokio::test]
 async fn status_line_context_remaining_renders_labeled_percent() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());

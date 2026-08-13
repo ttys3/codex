@@ -2337,6 +2337,14 @@ impl App {
                     tui.frame_requester().schedule_frame();
                 }
             }
+            AppEvent::StatusLineCommandUpdated { request_id, result } => {
+                if self
+                    .chat_widget
+                    .set_status_line_command_output(request_id, result)
+                {
+                    self.refresh_status_line();
+                }
+            }
             AppEvent::StatusLineSetupCancelled => {
                 self.chat_widget.cancel_status_line_setup();
             }

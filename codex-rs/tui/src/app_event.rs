@@ -1095,6 +1095,11 @@ pub(crate) enum AppEvent {
         request_id: u64,
         result: Result<crate::workspace_messages::WorkspaceHeadlineFetchResult, String>,
     },
+    /// Async update from the user-configured status-line command.
+    StatusLineCommandUpdated {
+        request_id: u64,
+        result: Result<Option<String>, String>,
+    },
     /// Apply a user-confirmed status-line item ordering/selection.
     StatusLineSetup {
         items: Vec<StatusLineItem>,

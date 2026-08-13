@@ -686,6 +686,32 @@ pub struct ModelAvailabilityNuxConfig {
 /// Fallback resize-reflow row cap when Codex cannot identify a terminal-specific scrollback size.
 pub const DEFAULT_TERMINAL_RESIZE_REFLOW_FALLBACK_MAX_ROWS: usize = 1_000;
 
+const fn default_status_line_command_timeout_ms() -> u64 {
+    1_000
+}
+
+const fn default_status_line_command_refresh_interval_ms() -> u64 {
+    5_000
+}
+
+/// A command whose first non-empty stdout line is rendered by the `custom-command` status-line
+/// item.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct StatusLineCommandConfig {
+    /// Program and arguments to execute without implicit shell interpolation.
+    #[schemars(length(min = 1))]
+    pub command: Vec<String>,
+
+    /// Maximum command runtime in milliseconds. Runtime code clamps this to a safe range.
+    #[serde(default = "default_status_line_command_timeout_ms")]
+    pub timeout_ms: u64,
+
+    /// Minimum delay between command executions in milliseconds.
+    #[serde(default = "default_status_line_command_refresh_interval_ms")]
+    pub refresh_interval_ms: u64,
+}
+
 /// Collection of settings that are specific to the TUI.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
@@ -727,6 +753,12 @@ pub struct Tui {
     /// When unset, the TUI defaults to: `model-with-reasoning` and `current-dir`.
     #[serde(default)]
     pub status_line: Option<Vec<String>>,
+
+    /// Command backing the `custom-command` status-line item.
+    ///
+    /// This setting is ignored in project-local config because it executes automatically.
+    #[serde(default)]
+    pub status_line_command: Option<StatusLineCommandConfig>,
 
     /// Color status line items with colors derived from the active syntax theme.
     /// Defaults to `true`.

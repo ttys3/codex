@@ -421,6 +421,7 @@ use self::status_state::StatusIndicatorState;
 use self::status_state::StatusState;
 use self::status_state::TerminalTitleStatusKind;
 mod status_controls;
+mod status_line_extensions;
 mod status_surfaces;
 mod streaming;
 use self::status_surfaces::CachedProjectRootName;
@@ -764,6 +765,14 @@ pub(crate) struct ChatWidget {
     status_line_workspace_headline_last_requested_at: Option<Instant>,
     // Set after the backend reports the workspace-message feature gate is disabled.
     status_line_workspace_messages_disabled: bool,
+    // Cached first non-empty stdout line from the custom status-line command.
+    status_line_command_output: Option<String>,
+    // Request ID for the custom status-line command currently in flight.
+    status_line_command_pending_request_id: Option<u64>,
+    // Last time the custom status-line command was requested.
+    status_line_command_last_requested_at: Option<Instant>,
+    // CWD used for the cached custom command output.
+    status_line_command_cwd: Option<PathBuf>,
     // Current thread-goal status shown in the status line when plan mode is inactive.
     current_goal_status_indicator: Option<GoalStatusIndicator>,
     current_goal_status: Option<GoalStatusState>,
@@ -1216,6 +1225,7 @@ impl ChatWidget {
             self.refresh_terminal_title();
         }
         self.refresh_status_line_if_workspace_headline_due();
+        self.refresh_status_line_if_custom_command_due();
     }
 
     fn flush_active_cell(&mut self) {

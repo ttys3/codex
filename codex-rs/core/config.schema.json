@@ -3082,6 +3082,38 @@
       },
       "type": "object"
     },
+    "StatusLineCommandConfig": {
+      "additionalProperties": false,
+      "description": "A command whose first non-empty stdout line is rendered by the `custom-command` status-line item.",
+      "properties": {
+        "command": {
+          "description": "Program and arguments to execute without implicit shell interpolation.",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "refresh_interval_ms": {
+          "default": 5000,
+          "description": "Minimum delay between command executions in milliseconds.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "timeout_ms": {
+          "default": 1000,
+          "description": "Maximum command runtime in milliseconds. Runtime code clamps this to a safe range.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "type": "object"
+    },
     "ThreadStoreToml": {
       "oneOf": [
         {
@@ -3522,6 +3554,15 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "status_line_command": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/StatusLineCommandConfig"
+            }
+          ],
+          "default": null,
+          "description": "Command backing the `custom-command` status-line item.\n\nThis setting is ignored in project-local config because it executes automatically."
         },
         "status_line_use_colors": {
           "default": true,
