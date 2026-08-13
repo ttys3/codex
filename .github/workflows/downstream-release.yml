@@ -1,0 +1,471 @@
+name: downstream-release
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: "Upstream rust-v tag; empty selects the latest stable tag"
+        required: false
+        type: string
+      revision:
+        description: "Downstream release revision for this upstream tag"
+        required: true
+        default: "1"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: downstream-release
+  cancel-in-progress: false
+
+env:
+  DOWNSTREAM_BRANCH: downstream/statusline
+  UPSTREAM_REPOSITORY: openai/codex
+
+jobs:
+  prepare:
+    name: Prepare candidate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    outputs:
+      candidate_branch: ${{ steps.candidate.outputs.candidate_branch }}
+      candidate_sha: ${{ steps.candidate.outputs.candidate_sha }}
+      release_tag: ${{ steps.candidate.outputs.release_tag }}
+      skip: ${{ steps.candidate.outputs.skip }}
+      upstream_tag: ${{ steps.candidate.outputs.upstream_tag }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.DOWNSTREAM_BRANCH }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Resolve upstream tag and push candidate branch
+        id: candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_REVISION: ${{ github.event.inputs.revision || '1' }}
+          REQUESTED_TAG: ${{ github.event.inputs.upstream_tag || '' }}
+        run: |
+          set -euo pipefail
+
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git" 2>/dev/null \
+            || git remote set-url upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          git fetch --force upstream "+refs/tags/rust-v*:refs/tags/rust-v*"
+
+          upstream_tag="$REQUESTED_TAG"
+          if [[ -z "$upstream_tag" ]]; then
+            upstream_tag="$(
+              git tag --list 'rust-v*' \
+                | grep -E '^rust-v[0-9]+\.[0-9]+\.[0-9]+$' \
+                | sort -V \
+                | tail -n 1 \
+                || true
+            )"
+          fi
+          if [[ ! "$upstream_tag" =~ ^rust-v[0-9]+\.[0-9]+\.[0-9]+(-(alpha(\.[0-9]+){0,2}|beta(\.[0-9]+)?))?$ ]]; then
+            echo "Invalid upstream tag: ${upstream_tag:-<empty>}" >&2
+            exit 1
+          fi
+          if ! git rev-parse --verify --quiet "${upstream_tag}^{commit}" >/dev/null; then
+            echo "Upstream tag does not exist: $upstream_tag" >&2
+            exit 1
+          fi
+
+          revision="$REQUESTED_REVISION"
+          if [[ ! "$revision" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Revision must be a positive integer: $revision" >&2
+            exit 1
+          fi
+          release_tag="statusline-v${upstream_tag#rust-v}-r${revision}"
+
+          if gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            {
+              echo "candidate_branch="
+              echo "candidate_sha="
+              echo "release_tag=$release_tag"
+              echo "skip=true"
+              echo "upstream_tag=$upstream_tag"
+            } >> "$GITHUB_OUTPUT"
+            echo "Release $release_tag already exists; nothing to do."
+            exit 0
+          fi
+
+          marker_file=".downstream/upstream-tag"
+          if [[ ! -f "$marker_file" ]]; then
+            echo "Missing $marker_file" >&2
+            exit 1
+          fi
+          current_tag="$(tr -d '\r\n' < "$marker_file")"
+          if [[ ! "$current_tag" =~ ^rust-v[0-9]+\.[0-9]+\.[0-9]+(-(alpha(\.[0-9]+){0,2}|beta(\.[0-9]+)?))?$ ]]; then
+            echo "Invalid current upstream marker: $current_tag" >&2
+            exit 1
+          fi
+          current_commit="$(git rev-parse "${current_tag}^{commit}")"
+          target_commit="$(git rev-parse "${upstream_tag}^{commit}")"
+
+          if [[ "$current_commit" != "$target_commit" ]]; then
+            if ! git merge-base --is-ancestor "$current_commit" "$target_commit"; then
+              echo "$upstream_tag is not a forward update from $current_tag" >&2
+              exit 1
+            fi
+
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git merge --no-ff --no-commit "$target_commit"
+            printf '%s\n' "$upstream_tag" > "$marker_file"
+            git add "$marker_file"
+            git commit \
+              -m "chore(upstream): merge $upstream_tag" \
+              -m "Co-Authored-By: Codex (gpt-5.6-sol) <noreply@openai.com>"
+          fi
+
+          candidate_branch="automation/${release_tag}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          candidate_sha="$(git rev-parse HEAD)"
+          git push origin "HEAD:refs/heads/$candidate_branch"
+
+          {
+            echo "candidate_branch=$candidate_branch"
+            echo "candidate_sha=$candidate_sha"
+            echo "release_tag=$release_tag"
+            echo "skip=false"
+            echo "upstream_tag=$upstream_tag"
+          } >> "$GITHUB_OUTPUT"
+
+  verify:
+    name: Verify downstream patch
+    needs: prepare
+    if: needs.prepare.outputs.skip != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.prepare.outputs.candidate_sha }}
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-ci
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          components: rustfmt
+
+      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        with:
+          tool: nextest
+          version: 0.9.103
+
+      - name: Install Linux test dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            bubblewrap \
+            libcap-dev \
+            pkg-config
+
+      - name: Check Rust formatting
+        run: cargo fmt -- --config imports_granularity=Item --check
+
+      - name: Check generated config schema
+        shell: bash
+        run: |
+          set -euo pipefail
+          just write-config-schema
+          git -C "$GITHUB_WORKSPACE" diff --exit-code -- codex-rs/core/config.schema.json
+
+      - name: Test status-line extensions
+        run: just test -p codex-tui status_line_extensions
+
+      - name: Test status-line command configuration
+        run: just test -p codex-config -p codex-core status_line_command
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: prepare
+    if: needs.prepare.outputs.skip != 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: codex-rs
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      TARGET: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-amd64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            is_linux: true
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            is_linux: true
+          - platform: macos-arm64
+            runner: macos-15
+            target: aarch64-apple-darwin
+            is_linux: false
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.prepare.outputs.candidate_sha }}
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Use hermetic Cargo home
+        if: matrix.is_linux
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo_home="${GITHUB_WORKSPACE}/.cargo-home"
+          mkdir -p "${cargo_home}/bin"
+          echo "CARGO_HOME=${cargo_home}" >> "$GITHUB_ENV"
+          echo "${cargo_home}/bin" >> "$GITHUB_PATH"
+          : > "${cargo_home}/config.toml"
+
+      - name: Install Zig
+        if: matrix.is_linux
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.14.0
+          use-cache: false
+
+      - name: Install musl build tools
+        if: matrix.is_linux
+        env:
+          APT_INSTALL_ARGS: --no-install-recommends
+          APT_UPDATE_ARGS: -o Acquire::Retries=3
+          DEBIAN_FRONTEND: noninteractive
+        shell: bash
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/install-musl-build-tools.sh"
+
+      - name: Disable aws-lc jitter entropy
+        if: matrix.is_linux
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "AWS_LC_SYS_NO_JITTER_ENTROPY=1" >> "$GITHUB_ENV"
+          target_no_jitter="AWS_LC_SYS_NO_JITTER_ENTROPY_${TARGET}"
+          target_no_jitter="${target_no_jitter//-/_}"
+          echo "${target_no_jitter}=1" >> "$GITHUB_ENV"
+
+      - name: Configure rusty_v8 artifacts
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Build and hash bwrap
+        if: matrix.is_linux
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --target "$TARGET" --release --bin bwrap
+          bwrap_path="target/${TARGET}/release/bwrap"
+          strip --strip-debug --strip-unneeded "$bwrap_path"
+          digest="$(sha256sum "$bwrap_path" | awk '{print $1}')"
+          echo "CODEX_BWRAP_SHA256=$digest" >> "$GITHUB_ENV"
+
+      - name: Build Codex
+        shell: bash
+        run: cargo build --target "$TARGET" --release --bin codex
+
+      - name: Strip, verify, and package
+        shell: bash
+        env:
+          IS_LINUX: ${{ matrix.is_linux }}
+          PLATFORM: ${{ matrix.platform }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          codex_path="target/${TARGET}/release/codex"
+          if [[ "$IS_LINUX" == "true" ]]; then
+            strip --strip-debug --strip-unneeded "$codex_path"
+          else
+            strip -x "$codex_path"
+          fi
+
+          file_output="$(file "$codex_path")"
+          echo "$file_output"
+          case "$PLATFORM" in
+            linux-amd64)
+              grep -Eq 'ELF 64-bit.*x86-64' <<< "$file_output"
+              ;;
+            linux-arm64)
+              grep -Eq 'ELF 64-bit.*ARM aarch64' <<< "$file_output"
+              ;;
+            macos-arm64)
+              grep -Eq 'Mach-O 64-bit executable arm64' <<< "$file_output"
+              ;;
+            *)
+              echo "Unexpected platform: $PLATFORM" >&2
+              exit 1
+              ;;
+          esac
+
+          package_root="${RUNNER_TEMP}/package"
+          mkdir -p "$package_root"
+          install -m 0755 "$codex_path" "$package_root/codex"
+          if [[ "$IS_LINUX" == "true" ]]; then
+            mkdir -p "$package_root/codex-resources"
+            install -m 0755 "target/${TARGET}/release/bwrap" \
+              "$package_root/codex-resources/bwrap"
+          fi
+
+          asset="codex-${RELEASE_TAG}-${PLATFORM}.tar.gz"
+          tar -C "$package_root" -czf "${RUNNER_TEMP}/${asset}" .
+          if command -v sha256sum >/dev/null 2>&1; then
+            (cd "$RUNNER_TEMP" && sha256sum "$asset" > "${asset}.sha256")
+          else
+            (cd "$RUNNER_TEMP" && shasum -a 256 "$asset" > "${asset}.sha256")
+          fi
+
+      - name: Upload release asset
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: release-${{ matrix.platform }}
+          path: |
+            ${{ runner.temp }}/codex-*.tar.gz
+            ${{ runner.temp }}/codex-*.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish downstream release
+    needs:
+      - prepare
+      - verify
+      - build
+    if: >-
+      needs.prepare.outputs.skip != 'true' &&
+      needs.verify.result == 'success' &&
+      needs.build.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.prepare.outputs.candidate_sha }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Download release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t archives < <(find dist -maxdepth 1 -type f -name '*.tar.gz' | sort)
+          mapfile -t checksums < <(find dist -maxdepth 1 -type f -name '*.sha256' | sort)
+          if [[ "${#archives[@]}" -ne 3 || "${#checksums[@]}" -ne 3 ]]; then
+            echo "Expected exactly three archives and three checksums" >&2
+            find dist -maxdepth 1 -type f -print
+            exit 1
+          fi
+          for checksum in "${checksums[@]}"; do
+            (cd dist && sha256sum -c "$(basename "$checksum")")
+          done
+
+      - name: Fast-forward maintained branch
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ needs.prepare.outputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$DOWNSTREAM_BRANCH"
+          if ! git merge-base --is-ancestor FETCH_HEAD "$CANDIDATE_SHA"; then
+            echo "$DOWNSTREAM_BRANCH moved while this workflow was running" >&2
+            exit 1
+          fi
+          git push origin "$CANDIDATE_SHA:refs/heads/$DOWNSTREAM_BRANCH"
+
+      - name: Create annotated release tag
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ needs.prepare.outputs.candidate_sha }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          UPSTREAM_TAG: ${{ needs.prepare.outputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            git fetch origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+            existing_sha="$(git rev-list -n 1 "$RELEASE_TAG")"
+            if [[ "$existing_sha" != "$CANDIDATE_SHA" ]]; then
+              echo "$RELEASE_TAG already points to $existing_sha" >&2
+              exit 1
+            fi
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$RELEASE_TAG" "$CANDIDATE_SHA" \
+              -m "Codex status-line downstream release for $UPSTREAM_TAG"
+            git push origin "refs/tags/$RELEASE_TAG"
+          fi
+
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          UPSTREAM_TAG: ${{ needs.prepare.outputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+          notes="${RUNNER_TEMP}/release-notes.md"
+          cat > "$notes" <<EOF
+          Downstream Codex build based on OpenAI Codex \
+          [${UPSTREAM_TAG}](https://github.com/${UPSTREAM_REPOSITORY}/releases/tag/${UPSTREAM_TAG}).
+
+          This release carries the status-line extensions documented in \
+          [DOWNSTREAM.md](https://github.com/${GITHUB_REPOSITORY}/blob/${RELEASE_TAG}/DOWNSTREAM.md).
+
+          Release assets are limited to:
+
+          - Linux amd64 (musl; includes the required bundled bwrap resource)
+          - Linux arm64 (musl; includes the required bundled bwrap resource)
+          - macOS arm64 (unsigned)
+          EOF
+
+          prerelease_args=()
+          if [[ "$UPSTREAM_TAG" == *-* ]]; then
+            prerelease_args+=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Codex statusline ${UPSTREAM_TAG#rust-v} r${RELEASE_TAG##*-r}" \
+            --notes-file "$notes" \
+            "${prerelease_args[@]}"
+
+      - name: Remove temporary candidate branch
+        shell: bash
+        env:
+          CANDIDATE_BRANCH: ${{ needs.prepare.outputs.candidate_branch }}
+        run: |
+          git push origin --delete "$CANDIDATE_BRANCH" \
+            || echo "Could not remove temporary branch $CANDIDATE_BRANCH"
