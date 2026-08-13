@@ -175,7 +175,8 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             bubblewrap \
             libcap-dev \
-            pkg-config
+            pkg-config \
+            shellcheck
 
       - name: Check Rust formatting
         run: cargo fmt -- --config imports_granularity=Item --check
@@ -192,6 +193,21 @@ jobs:
 
       - name: Test status-line command configuration
         run: just test -p codex-config -p codex-core status_line_command
+
+      - name: Test downstream update action
+        run: just test -p codex-tui update_action
+
+      - name: Test daemon updater selection
+        run: just test -p codex-app-server-daemon update_loop
+
+      - name: Test downstream update script
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh -n scripts/install/downstream-update.sh
+          shellcheck -s sh scripts/install/downstream-update.sh
+          python3 scripts/install/test_downstream_update_sh.py
 
   build:
     name: Build ${{ matrix.platform }}
@@ -288,6 +304,9 @@ jobs:
 
       - name: Build Codex
         shell: bash
+        env:
+          CODEX_DOWNSTREAM_BUILD: "1"
+          CODEX_DOWNSTREAM_RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
         run: cargo build --target "$TARGET" --release --bin codex
 
       - name: Strip, verify, and package
@@ -444,6 +463,9 @@ jobs:
 
           This release carries the status-line extensions documented in \
           [DOWNSTREAM.md](https://github.com/${GITHUB_REPOSITORY}/blob/${RELEASE_TAG}/DOWNSTREAM.md).
+
+          The bundled `codex update` checks OpenAI's official latest Release first and downloads
+          verified update archives only from this fork's GitHub Release.
 
           Release assets are limited to:
 

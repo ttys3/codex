@@ -55,6 +55,15 @@ const RESTART_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 const UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 #[cfg(unix)]
 const INSTALL_URL: &str = "https://chatgpt.com/codex/install.sh";
+#[cfg(unix)]
+const DOWNSTREAM_BUILD: bool = option_env!("CODEX_DOWNSTREAM_BUILD").is_some();
+#[cfg(unix)]
+const DOWNSTREAM_RELEASE_TAG: Option<&str> = option_env!("CODEX_DOWNSTREAM_RELEASE_TAG");
+#[cfg(unix)]
+const DOWNSTREAM_UPDATE_SCRIPT: &[u8] =
+    include_bytes!("../../../scripts/install/downstream-update.sh");
+#[cfg(unix)]
+const UP_TO_DATE_EXIT_CODE: i32 = 10;
 
 #[cfg(unix)]
 pub(crate) async fn run(http_client_factory: HttpClientFactory) -> Result<()> {
@@ -167,13 +176,26 @@ pub(crate) fn reexec_managed_updater(managed_codex_bin: &std::path::Path) -> Res
 
 #[cfg(unix)]
 async fn install_latest_standalone(http: &RouteAwareClientPool) -> Result<()> {
-    let script = fetch_installer_script(http).await?;
+    let script = installer_script(http, DOWNSTREAM_BUILD).await?;
 
-    let mut child = Command::new("/bin/sh")
+    let mut command = Command::new("/bin/sh");
+    command
         .arg("-s")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    if DOWNSTREAM_BUILD {
+        command
+            .env(
+                "CODEX_CURRENT_EXE",
+                std::env::current_exe().context("failed to resolve current updater executable")?,
+            )
+            .env("CODEX_CURRENT_VERSION", env!("CARGO_PKG_VERSION"));
+        if let Some(release_tag) = DOWNSTREAM_RELEASE_TAG {
+            command.env("CODEX_CURRENT_DOWNSTREAM_TAG", release_tag);
+        }
+    }
+    let mut child = command
         .spawn()
         .context("failed to invoke standalone Codex updater")?;
     let mut stdin = child
@@ -190,10 +212,19 @@ async fn install_latest_standalone(http: &RouteAwareClientPool) -> Result<()> {
         .await
         .context("failed to wait for standalone Codex updater")?;
 
-    if status.success() {
+    if status.success() || (DOWNSTREAM_BUILD && status.code() == Some(UP_TO_DATE_EXIT_CODE)) {
         Ok(())
     } else {
         anyhow::bail!("standalone Codex updater exited with status {status}")
+    }
+}
+
+#[cfg(unix)]
+async fn installer_script(http: &impl InstallerHttp, downstream_build: bool) -> Result<Vec<u8>> {
+    if downstream_build {
+        Ok(DOWNSTREAM_UPDATE_SCRIPT.to_vec())
+    } else {
+        fetch_installer_script(http).await
     }
 }
 

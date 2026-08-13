@@ -26,6 +26,25 @@ seconds, refresh interval to 250 ms–60 seconds, captured output to 4 KiB, and 
 120 characters. Empty output, failures, and timeouts are hidden. Project-local config cannot set
 the command because it executes automatically; configure it in user-level config.
 
+## Updates
+
+Downstream release binaries embed both a build marker and their
+`statusline-vX.Y.Z-rN` release tag. `codex update` always queries
+`https://api.github.com/repos/openai/codex/releases/latest` first and compares that official
+version with the running binary. It then queries `ttys3/codex` only when either the official
+version is newer or this fork has a newer `rN` revision for the same official version.
+
+The updater accepts a downstream release only when its `statusline-vX.Y.Z-rN` tag matches the
+official version. It downloads the archive and `.sha256` sidecar for the current supported
+platform exclusively from `ttys3/codex` GitHub Releases, verifies the checksum and the downloaded
+binary's reported version, and then replaces the current binary atomically. Linux updates also
+replace the bundled `codex-resources/bwrap`. A failed post-install validation rolls both files
+back. The installation directory must be writable by the current user.
+
+The downstream update script is embedded in the binary, so `codex update` does not fetch mutable
+installer code at runtime. The app-server daemon uses the same embedded path in downstream builds
+and therefore cannot overwrite the fork with OpenAI's standalone installer.
+
 ## Upstream and release policy
 
 `downstream/statusline` is the maintained branch. `.downstream/upstream-tag` records its upstream

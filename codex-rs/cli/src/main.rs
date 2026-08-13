@@ -780,7 +780,13 @@ fn handle_app_exit(exit_info: AppExitInfo) -> anyhow::Result<()> {
 fn run_update_action(action: UpdateAction) -> anyhow::Result<()> {
     println!();
     let cmd_str = action.command_str();
-    println!("Updating Codex via `{cmd_str}`...");
+    if action.is_downstream() {
+        println!(
+            "Checking the official Codex release and updating from `ttys3/codex` if needed..."
+        );
+    } else {
+        println!("Updating Codex via `{cmd_str}`...");
+    }
 
     let status = {
         #[cfg(windows)]
@@ -807,11 +813,32 @@ fn run_update_action(action: UpdateAction) -> anyhow::Result<()> {
                 .iter()
                 .map(crate::wsl_paths::normalize_for_wsl)
                 .collect();
-            std::process::Command::new(&command_path)
-                .args(&normalized_args)
-                .status()?
+            let mut command = std::process::Command::new(&command_path);
+            command.args(&normalized_args);
+            if action.is_downstream() {
+                command
+                    .env("CODEX_CURRENT_EXE", std::env::current_exe()?)
+                    .env("CODEX_CURRENT_VERSION", env!("CARGO_PKG_VERSION"));
+                if let Some(release_tag) = action.downstream_release_tag() {
+                    command.env("CODEX_CURRENT_DOWNSTREAM_TAG", release_tag);
+                }
+            }
+            if let Some(stdin_bytes) = action.stdin_bytes() {
+                let mut child = command.stdin(std::process::Stdio::piped()).spawn()?;
+                let mut stdin = child.stdin.take().ok_or_else(|| {
+                    anyhow::anyhow!("downstream Codex updater stdin was unavailable")
+                })?;
+                stdin.write_all(stdin_bytes)?;
+                drop(stdin);
+                child.wait()?
+            } else {
+                command.status()?
+            }
         }
     };
+    if action.is_downstream() && status.code() == Some(10) {
+        return Ok(());
+    }
     if !status.success() {
         anyhow::bail!("`{cmd_str}` failed with status {status}");
     }

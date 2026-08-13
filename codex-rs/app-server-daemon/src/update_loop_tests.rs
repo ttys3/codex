@@ -2,10 +2,12 @@ use std::sync::Mutex;
 
 use pretty_assertions::assert_eq;
 
+use super::DOWNSTREAM_UPDATE_SCRIPT;
 use super::INSTALL_URL;
 use super::InstallerHttp;
 use super::InstallerResponse;
 use super::fetch_installer_script;
+use super::installer_script;
 use super::update_modes_for_identities;
 use crate::RestartMode;
 use crate::UpdaterRefreshMode;
@@ -60,6 +62,19 @@ async fn installer_fetch_rejects_non_success_status() {
 
     assert!(error.to_string().contains("503"));
     assert_eq!(http.requested_urls(), vec![INSTALL_URL.to_string()]);
+}
+
+#[tokio::test]
+async fn downstream_installer_is_embedded_and_skips_official_url() {
+    let http = FakeInstallerHttp::new(InstallerResponse::Unsuccessful { status: 503 });
+
+    assert_eq!(
+        installer_script(&http, true)
+            .await
+            .expect("embedded downstream updater should be available"),
+        DOWNSTREAM_UPDATE_SCRIPT.to_vec()
+    );
+    assert!(http.requested_urls().is_empty());
 }
 
 struct FakeInstallerHttp {

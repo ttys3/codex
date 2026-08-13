@@ -108,9 +108,10 @@ async fn check_for_update(
             npm_registry::ensure_version_ready(&package_info, &latest_version)?;
             latest_version
         }
-        Some(UpdateAction::StandaloneUnix) | Some(UpdateAction::StandaloneWindows) | None => {
-            fetch_latest_github_release_version(&client_pool).await?
-        }
+        Some(UpdateAction::StandaloneUnix)
+        | Some(UpdateAction::StandaloneWindows)
+        | Some(UpdateAction::DownstreamStandaloneUnix)
+        | None => fetch_latest_github_release_version(&client_pool).await?,
     };
 
     // Preserve any previously dismissed version if present.
