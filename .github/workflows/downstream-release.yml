@@ -479,7 +479,8 @@ jobs:
           EOF
 
           prerelease_args=()
-          if [[ "$UPSTREAM_TAG" == *-* ]]; then
+          upstream_version="${UPSTREAM_TAG#rust-v}"
+          if [[ "$upstream_version" == *-* ]]; then
             prerelease_args+=(--prerelease)
           fi
           gh release create "$RELEASE_TAG" dist/* \
