@@ -376,7 +376,7 @@ jobs:
                 grep -Eq 'ELF 64-bit.*ARM aarch64' <<< "$file_output"
                 ;;
               macos-arm64)
-                grep -Eq 'Mach-O 64-bit executable arm64' <<< "$file_output"
+                grep -Eq 'Mach-O 64-bit.*(arm64.*executable|executable.*arm64)' <<< "$file_output"
                 ;;
               *)
                 echo "Unexpected platform: $PLATFORM" >&2
@@ -547,7 +547,7 @@ jobs:
             aarch64-apple-darwin-strip -x "$binary_path"
             file_output="$(file "$binary_path")"
             echo "$file_output"
-            grep -Eq 'Mach-O 64-bit executable arm64' <<< "$file_output"
+            grep -Eq 'Mach-O 64-bit.*(arm64.*executable|executable.*arm64)' <<< "$file_output"
           done
 
           package_root="${RUNNER_TEMP}/package"
