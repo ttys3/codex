@@ -231,18 +231,18 @@ jobs:
             target: x86_64-unknown-linux-musl
             is_linux: true
             timeout_minutes: 90
-          - platform: linux-arm64
-            runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
-            is_linux: true
-            timeout_minutes: 90
-          - platform: macos-arm64
-            runner: macos-15
-            target: aarch64-apple-darwin
-            is_linux: false
-            # Public macOS runners are substantially slower than the larger
-            # private runner used by upstream's release workflow.
-            timeout_minutes: 180
+          # Temporarily disabled targets are retained here so they can be
+          # restored without reconstructing the matrix.
+          # - platform: linux-arm64
+          #   runner: ubuntu-24.04-arm
+          #   target: aarch64-unknown-linux-musl
+          #   is_linux: true
+          #   timeout_minutes: 90
+          # - platform: macos-arm64
+          #   runner: macos-15
+          #   target: aarch64-apple-darwin
+          #   is_linux: false
+          #   timeout_minutes: 180
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -457,8 +457,8 @@ jobs:
           set -euo pipefail
           mapfile -t archives < <(find dist -maxdepth 1 -type f -name '*.tar.gz' | sort)
           mapfile -t checksums < <(find dist -maxdepth 1 -type f -name '*.sha256' | sort)
-          if [[ "${#archives[@]}" -ne 3 || "${#checksums[@]}" -ne 3 ]]; then
-            echo "Expected exactly three archives and three checksums" >&2
+          if [[ "${#archives[@]}" -ne 1 || "${#checksums[@]}" -ne 1 ]]; then
+            echo "Expected exactly one archive and one checksum" >&2
             find dist -maxdepth 1 -type f -print
             exit 1
           fi
@@ -545,8 +545,6 @@ jobs:
           pinned ripgrep resource. Linux packages also include the required bundled bwrap.
 
           - Linux amd64 (musl)
-          - Linux arm64 (musl)
-          - macOS arm64 (unsigned Codex binaries)
           EOF
 
           prerelease_args=()
