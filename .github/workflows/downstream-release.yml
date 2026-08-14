@@ -231,18 +231,11 @@ jobs:
             target: x86_64-unknown-linux-musl
             is_linux: true
             timeout_minutes: 90
-          # Temporarily disabled targets are retained here so they can be
-          # restored without reconstructing the matrix.
-          # - platform: linux-arm64
-          #   runner: ubuntu-24.04-arm
-          #   target: aarch64-unknown-linux-musl
-          #   is_linux: true
-          #   timeout_minutes: 90
-          # - platform: macos-arm64
-          #   runner: macos-15
-          #   target: aarch64-apple-darwin
-          #   is_linux: false
-          #   timeout_minutes: 180
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            is_linux: true
+            timeout_minutes: 90
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -423,16 +416,148 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  build_macos_arm64:
+    name: Build macos-arm64 on Linux arm64
+    needs: prepare
+    if: needs.prepare.outputs.skip != 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/ttys3/codex-macos-cross:macos-27.0
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        working-directory: codex-rs
+    env:
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      TARGET: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.prepare.outputs.candidate_sha }}
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Verify macOS cross toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "aarch64"
+          test "$(oa64-clang -dumpmachine)" = "arm64-apple-darwin"
+          test -d "$SDKROOT"
+          command -v aarch64-apple-darwin-ar
+          command -v aarch64-apple-darwin-strip
+
+      - name: Configure rusty_v8 artifacts
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: aarch64-apple-darwin
+
+      - name: Build Codex package binaries
+        shell: bash
+        env:
+          CODEX_DOWNSTREAM_BUILD: "1"
+          CODEX_DOWNSTREAM_RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: >-
+          cargo build --target "$TARGET" --release
+          --bin codex
+          --bin codex-code-mode-host
+
+      - name: Download official patched zsh manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          zsh_release_tag="$(
+            sed -n \
+              's/^[[:space:]]*CODEX_ZSH_RELEASE_TAG:[[:space:]]*//p' \
+              "${GITHUB_WORKSPACE}/.github/workflows/rust-release.yml" \
+              | head -n 1
+          )"
+          if [[ ! "$zsh_release_tag" =~ ^codex-zsh-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Could not resolve the upstream patched zsh release tag" >&2
+            exit 1
+          fi
+
+          zsh_manifest="${RUNNER_TEMP}/codex-zsh"
+          curl -fsSL \
+            "https://github.com/${UPSTREAM_REPOSITORY}/releases/download/${zsh_release_tag}/codex-zsh" \
+            -o "$zsh_manifest"
+          grep -Fq 'https://github.com/openai/codex/releases/download/' "$zsh_manifest"
+          echo "CODEX_ZSH_MANIFEST=$zsh_manifest" >> "$GITHUB_ENV"
+          echo "Using OpenAI patched zsh release $zsh_release_tag"
+
+      - name: Strip, verify, and package
+        shell: bash
+        env:
+          PLATFORM: macos-arm64
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          codex_path="target/${TARGET}/release/codex"
+          code_mode_host_path="target/${TARGET}/release/codex-code-mode-host"
+          for binary_path in "$codex_path" "$code_mode_host_path"; do
+            aarch64-apple-darwin-strip -x "$binary_path"
+            file_output="$(file "$binary_path")"
+            echo "$file_output"
+            grep -Eq 'Mach-O 64-bit executable arm64' <<< "$file_output"
+          done
+
+          package_root="${RUNNER_TEMP}/package"
+          python3 "${GITHUB_WORKSPACE}/scripts/build_codex_package.py" \
+            --target "$TARGET" \
+            --variant codex \
+            --entrypoint-bin "$codex_path" \
+            --code-mode-host-bin "$code_mode_host_path" \
+            --zsh-manifest "$CODEX_ZSH_MANIFEST" \
+            --package-dir "$package_root" \
+            --force
+
+          # Keep the top-level entrypoints so the updater embedded in r1 can
+          # consume this archive before r2 migrates the install to the package
+          # layout on the next update/repair run.
+          ln -s "bin/codex" "$package_root/codex"
+          ln -s "bin/codex-code-mode-host" "$package_root/codex-code-mode-host"
+
+          test -f "$package_root/codex-package.json"
+          test -x "$package_root/bin/codex"
+          test -x "$package_root/bin/codex-code-mode-host"
+          test -x "$package_root/codex-path/rg"
+          test -x "$package_root/codex-resources/zsh/bin/zsh"
+
+          asset="codex-${RELEASE_TAG}-${PLATFORM}.tar.gz"
+          tar -C "$package_root" -czf "${RUNNER_TEMP}/${asset}" .
+          (cd "$RUNNER_TEMP" && sha256sum "$asset" > "${asset}.sha256")
+
+      - name: Upload release asset
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: release-macos-arm64
+          path: |
+            ${{ runner.temp }}/codex-*.tar.gz
+            ${{ runner.temp }}/codex-*.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
   publish:
     name: Publish downstream release
     needs:
       - prepare
       - verify
       - build
+      - build_macos_arm64
     if: >-
       needs.prepare.outputs.skip != 'true' &&
       needs.verify.result == 'success' &&
-      needs.build.result == 'success'
+      needs.build.result == 'success' &&
+      needs.build_macos_arm64.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -457,8 +582,8 @@ jobs:
           set -euo pipefail
           mapfile -t archives < <(find dist -maxdepth 1 -type f -name '*.tar.gz' | sort)
           mapfile -t checksums < <(find dist -maxdepth 1 -type f -name '*.sha256' | sort)
-          if [[ "${#archives[@]}" -ne 1 || "${#checksums[@]}" -ne 1 ]]; then
-            echo "Expected exactly one archive and one checksum" >&2
+          if [[ "${#archives[@]}" -ne 3 || "${#checksums[@]}" -ne 3 ]]; then
+            echo "Expected exactly three archives and three checksums" >&2
             find dist -maxdepth 1 -type f -print
             exit 1
           fi
@@ -545,6 +670,8 @@ jobs:
           pinned ripgrep resource. Linux packages also include the required bundled bwrap.
 
           - Linux amd64 (musl)
+          - Linux arm64 (musl)
+          - macOS arm64 (unsigned Codex binaries, cross-compiled on Linux arm64)
           EOF
 
           prerelease_args=()

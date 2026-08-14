@@ -1,0 +1,4 @@
+**
+!.github/
+!.github/docker/
+!.github/docker/macos-cross/
