@@ -36,6 +36,7 @@ podman run --rm --platform linux/arm64 \
   bash -c 'oa64-clang -dumpmachine && clang --version && aarch64-apple-darwin-strip --version'
 ```
 
-Log in with a token that has `write:packages`, push the image, confirm that the
-package is private and linked to `ttys3/codex`, then pin the resulting digest
-in `downstream-release.yml`.
+Log in with a token that has `write:packages`, push the image, and confirm that
+the package is private. In the package's **Manage Actions access** settings,
+grant `ttys3/codex` read access. The workflow pins the image digest, so update
+that digest in `downstream-release.yml` whenever the image is rebuilt.

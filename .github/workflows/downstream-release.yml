@@ -426,7 +426,7 @@ jobs:
       contents: read
       packages: read
     container:
-      image: ghcr.io/ttys3/codex-macos-cross:macos-27.0
+      image: ghcr.io/ttys3/codex-macos-cross:macos-27.0@sha256:9f2b9777f46a6daa11edbe0d8db6899bfd9164c9c8d8457d30905aa84f67133f
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
