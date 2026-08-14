@@ -222,7 +222,6 @@ jobs:
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-      SCCACHE_GHA_ENABLED: "true"
       SCCACHE_IDLE_TIMEOUT: "0"
       TARGET: ${{ matrix.target }}
     strategy:
@@ -253,7 +252,17 @@ jobs:
         uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
         with:
           tool: sccache
-          version: 0.7.5
+          version: 0.17.0
+
+      # The Actions cache endpoints are only injected into JavaScript actions,
+      # so re-export them for the sccache server spawned by the run steps below.
+      - name: Export Actions cache endpoints
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_SERVICE_V2', 'on');
+            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
       - name: Enable sccache
         shell: bash
@@ -262,6 +271,14 @@ jobs:
           wrapper="$(command -v sccache)"
           echo "RUSTC_WRAPPER=$wrapper" >> "$GITHUB_ENV"
           echo "CARGO_BUILD_RUSTC_WRAPPER=$wrapper" >> "$GITHUB_ENV"
+          # Fall back to the local disk cache instead of failing the whole build
+          # when the Actions cache endpoints are unavailable.
+          if [[ -n "${ACTIONS_RESULTS_URL:-}" && -n "${ACTIONS_RUNTIME_TOKEN:-}" ]]; then
+            echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          else
+            echo "SCCACHE_GHA_ENABLED=false" >> "$GITHUB_ENV"
+            echo "Actions cache unavailable; using the sccache local disk cache"
+          fi
 
       - name: Use hermetic Cargo home
         if: matrix.is_linux
@@ -459,7 +476,6 @@ jobs:
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-      SCCACHE_GHA_ENABLED: "true"
       SCCACHE_IDLE_TIMEOUT: "0"
       TARGET: aarch64-apple-darwin
     steps:
@@ -476,7 +492,17 @@ jobs:
         uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
         with:
           tool: sccache
-          version: 0.7.5
+          version: 0.17.0
+
+      # The Actions cache endpoints are only injected into JavaScript actions,
+      # so re-export them for the sccache server spawned by the run steps below.
+      - name: Export Actions cache endpoints
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_SERVICE_V2', 'on');
+            core.exportVariable('ACTIONS_RESULTS_URL', process.env.ACTIONS_RESULTS_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
       - name: Enable sccache
         shell: bash
@@ -485,6 +511,14 @@ jobs:
           wrapper="$(command -v sccache)"
           echo "RUSTC_WRAPPER=$wrapper" >> "$GITHUB_ENV"
           echo "CARGO_BUILD_RUSTC_WRAPPER=$wrapper" >> "$GITHUB_ENV"
+          # Fall back to the local disk cache instead of failing the whole build
+          # when the Actions cache endpoints are unavailable.
+          if [[ -n "${ACTIONS_RESULTS_URL:-}" && -n "${ACTIONS_RUNTIME_TOKEN:-}" ]]; then
+            echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          else
+            echo "SCCACHE_GHA_ENABLED=false" >> "$GITHUB_ENV"
+            echo "Actions cache unavailable; using the sccache local disk cache"
+          fi
 
       - name: Verify macOS cross toolchain
         shell: bash
