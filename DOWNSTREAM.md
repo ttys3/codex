@@ -63,13 +63,12 @@ base. The scheduled workflow checks every six hours for the latest stable `rust-
 tag. A manual run can select a prerelease tag and a downstream revision.
 
 The workflow creates a temporary candidate branch and merges only forward from the recorded
-upstream tag. It then validates the patch and currently builds exactly these release packages:
+upstream tag. It then validates the patch and builds exactly these release packages:
 
 - `linux-amd64` (`x86_64-unknown-linux-musl`)
-
-The `linux-arm64` (`aarch64-unknown-linux-musl`) and `macos-arm64`
-(`aarch64-apple-darwin`) matrix entries are retained as commented workflow configuration but are
-temporarily disabled.
+- `linux-arm64` (`aarch64-unknown-linux-musl`)
+- `macos-arm64` (`aarch64-apple-darwin`, cross-compiled on Linux arm64 with the private Fedora 44
+  toolchain image; not Developer ID-signed or notarized)
 
 Each build compiles both `codex` and `codex-code-mode-host`. Packaging downloads OpenAI's patched
 zsh manifest from the `CODEX_ZSH_RELEASE_TAG` pinned by the matching upstream release workflow;
