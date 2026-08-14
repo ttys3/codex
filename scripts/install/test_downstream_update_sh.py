@@ -17,34 +17,89 @@ DOWNSTREAM_API = "https://api.github.com/repos/ttys3/codex/releases/latest"
 RELEASES_BASE = "https://github.com/ttys3/codex/releases/download"
 
 
-def update_platform() -> str | None:
+def update_platform() -> tuple[str, str] | None:
     system = platform.system()
     machine = platform.machine()
     if system == "Linux" and machine in {"x86_64", "amd64"}:
-        return "linux-amd64"
+        return "linux-amd64", "x86_64-unknown-linux-musl"
     if system == "Linux" and machine in {"aarch64", "arm64"}:
-        return "linux-arm64"
+        return "linux-arm64", "aarch64-unknown-linux-musl"
     if system == "Darwin" and machine in {"arm64", "aarch64"}:
-        return "macos-arm64"
+        return "macos-arm64", "aarch64-apple-darwin"
     return None
 
 
-PLATFORM = update_platform()
+PLATFORM_AND_TARGET = update_platform()
+PLATFORM = PLATFORM_AND_TARGET[0] if PLATFORM_AND_TARGET else None
+TARGET = PLATFORM_AND_TARGET[1] if PLATFORM_AND_TARGET else None
 
 
-def write_executable(path: Path, version: str, installed_version: str | None = None) -> None:
+def write_executable(
+    path: Path, version: str, installed_version: str | None = None
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if installed_version is None:
         body = f"#!/bin/sh\nprintf 'codex-cli {version}\\n'\n"
     else:
         body = f"""#!/bin/sh
 case "$0" in
-  */extract/codex) printf 'codex-cli {version}\\n' ;;
-  *) printf 'codex-cli {installed_version}\\n' ;;
+  */install/codex) printf 'codex-cli {installed_version}\\n' ;;
+  *) printf 'codex-cli {version}\\n' ;;
 esac
 """
     path.write_text(body, encoding="utf-8")
     path.chmod(0o755)
+
+
+def write_helper(path: Path, content: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    path.chmod(0o755)
+
+
+def write_package(
+    package: Path,
+    version: str,
+    *,
+    installed_version: str | None = None,
+    include_host: bool = True,
+) -> None:
+    assert TARGET is not None
+    write_executable(package / "bin" / "codex", version, installed_version)
+    if include_host:
+        write_helper(
+            package / "bin" / "codex-code-mode-host",
+            b"#!/bin/sh\nexit 0\n",
+        )
+    write_helper(package / "codex-path" / "rg", b"#!/bin/sh\nexit 0\n")
+    write_helper(
+        package / "codex-resources" / "zsh" / "bin" / "zsh",
+        b"#!/bin/sh\nexit 0\n",
+    )
+    if TARGET.endswith("linux-musl"):
+        write_helper(
+            package / "codex-resources" / "bwrap",
+            b"new downstream bwrap\n",
+        )
+
+    (package / "codex-package.json").write_text(
+        json.dumps(
+            {
+                "layoutVersion": 1,
+                "version": version,
+                "target": TARGET,
+                "variant": "codex",
+                "entrypoint": "bin/codex",
+                "resourcesDir": "codex-resources",
+                "pathDir": "codex-path",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (package / "codex").symlink_to("bin/codex")
+    (package / "codex-code-mode-host").symlink_to("bin/codex-code-mode-host")
 
 
 def write_release(
@@ -53,24 +108,24 @@ def write_release(
     version: str,
     *,
     installed_version: str | None = None,
+    include_host: bool = True,
 ) -> None:
     assert PLATFORM is not None
     package = root / "package"
-    write_executable(package / "codex", version, installed_version)
-    if PLATFORM.startswith("linux-"):
-        bwrap = package / "codex-resources" / "bwrap"
-        bwrap.parent.mkdir(parents=True, exist_ok=True)
-        bwrap.write_bytes(b"new downstream bwrap\n")
-        bwrap.chmod(0o755)
+    write_package(
+        package,
+        version,
+        installed_version=installed_version,
+        include_host=include_host,
+    )
 
     asset = f"codex-{tag}-{PLATFORM}.tar.gz"
     release_dir = root / "releases" / tag
     release_dir.mkdir(parents=True, exist_ok=True)
     archive = release_dir / asset
     with tarfile.open(archive, "w:gz") as tar:
-        tar.add(package / "codex", arcname="codex")
-        if PLATFORM.startswith("linux-"):
-            tar.add(package / "codex-resources", arcname="codex-resources")
+        for child in package.iterdir():
+            tar.add(child, arcname=child.name)
 
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     (release_dir / f"{asset}.sha256").write_text(
@@ -156,16 +211,21 @@ def run_updater(
 ) -> subprocess.CompletedProcess[str]:
     temp_dir = root / "tmp"
     temp_dir.mkdir(exist_ok=True)
+    install_dir = root / "install"
+    install_dir.mkdir(exist_ok=True)
     fake_bin = write_fake_curl(root)
     env = os.environ.copy()
     env.update(
         {
             "CODEX_CURRENT_EXE": str(current_exe),
             "CODEX_CURRENT_VERSION": current_version,
+            "CODEX_HOME": str(root / "codex-home"),
+            "CODEX_INSTALL_DIR": str(install_dir),
             "CODEX_OFFICIAL_LATEST_API": "https://invalid.example/official",
             "CODEX_DOWNSTREAM_LATEST_API": "https://invalid.example/downstream",
             "CODEX_DOWNSTREAM_RELEASES_BASE": "https://invalid.example/releases",
             "CODEX_TEST_FIXTURE_ROOT": str(root),
+            "HOME": str(root / "home"),
             "PATH": f"{fake_bin}{os.pathsep}{env['PATH']}",
             "TMPDIR": str(temp_dir),
         }
@@ -183,6 +243,39 @@ def run_updater(
     )
 
 
+def assert_complete_install(
+    testcase: unittest.TestCase,
+    root: Path,
+    current: Path,
+    version: str,
+) -> Path:
+    assert TARGET is not None
+    testcase.assertTrue(current.is_symlink())
+    package = current.resolve().parent.parent
+    testcase.assertEqual(
+        package.parent,
+        root / "codex-home" / "packages" / "standalone" / "releases",
+    )
+    testcase.assertEqual(
+        subprocess.check_output([current, "--version"], text=True),
+        f"codex-cli {version}\n",
+    )
+    testcase.assertTrue((package / "bin" / "codex-code-mode-host").is_file())
+    testcase.assertTrue((package / "codex-path" / "rg").is_file())
+    testcase.assertTrue((package / "codex-resources" / "zsh" / "bin" / "zsh").is_file())
+    if TARGET.endswith("linux-musl"):
+        testcase.assertEqual(
+            (package / "codex-resources" / "bwrap").read_bytes(),
+            b"new downstream bwrap\n",
+        )
+    visible_host = current.parent / "codex-code-mode-host"
+    testcase.assertTrue(visible_host.is_symlink())
+    testcase.assertEqual(
+        visible_host.resolve(), package / "bin" / "codex-code-mode-host"
+    )
+    return package
+
+
 @unittest.skipIf(PLATFORM is None, "downstream updater does not support this platform")
 class DownstreamUpdateShTest(unittest.TestCase):
     def test_official_upgrade_downloads_matching_downstream_release(self) -> None:
@@ -198,10 +291,7 @@ class DownstreamUpdateShTest(unittest.TestCase):
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(
-                subprocess.check_output([current, "--version"], text=True),
-                "codex-cli 0.147.0\n",
-            )
+            assert_complete_install(self, root, current, "0.147.0")
             asset = f"codex-statusline-v0.147.0-r1-{PLATFORM}.tar.gz"
             self.assertEqual(
                 requests_made(root),
@@ -212,11 +302,6 @@ class DownstreamUpdateShTest(unittest.TestCase):
                     f"{RELEASES_BASE}/statusline-v0.147.0-r1/{asset}.sha256",
                 ],
             )
-            if PLATFORM and PLATFORM.startswith("linux-"):
-                self.assertEqual(
-                    (root / "install" / "codex-resources" / "bwrap").read_bytes(),
-                    b"new downstream bwrap\n",
-                )
 
     def test_newer_downstream_revision_updates_same_official_version(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -232,13 +317,13 @@ class DownstreamUpdateShTest(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("statusline-v0.147.0-r2", result.stdout)
+            assert_complete_install(self, root, current, "0.147.0")
 
-    def test_current_revision_returns_up_to_date_exit_code(self) -> None:
+    def test_same_revision_repairs_incomplete_flat_install(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             current = root / "install" / "codex"
             write_executable(current, "0.147.0")
-            original = current.read_bytes()
             write_official_release(root, "0.147.0")
             write_release(root, "statusline-v0.147.0-r2", "0.147.0")
 
@@ -246,9 +331,33 @@ class DownstreamUpdateShTest(unittest.TestCase):
                 root, current, "0.147.0", "statusline-v0.147.0-r2"
             )
 
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Repaired downstream Codex package", result.stdout)
+            assert_complete_install(self, root, current, "0.147.0")
+
+    def test_complete_current_revision_returns_up_to_date_exit_code(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            current = root / "install" / "codex"
+            write_executable(current, "0.147.0")
+            write_official_release(root, "0.147.0")
+            write_release(root, "statusline-v0.147.0-r2", "0.147.0")
+            first_result = run_updater(
+                root, current, "0.147.0", "statusline-v0.147.0-r2"
+            )
+            self.assertEqual(first_result.returncode, 0, first_result.stderr)
+            package = assert_complete_install(self, root, current, "0.147.0")
+            (root / "requests.log").unlink()
+            original = (package / "bin" / "codex").read_bytes()
+
+            result = run_updater(
+                root, current.resolve(), "0.147.0", "statusline-v0.147.0-r2"
+            )
+
             self.assertEqual(result.returncode, 10, result.stderr)
-            self.assertEqual(current.read_bytes(), original)
+            self.assertEqual((package / "bin" / "codex").read_bytes(), original)
             self.assertIn("already up to date", result.stdout)
+            self.assertEqual(requests_made(root), [OFFICIAL_API, DOWNSTREAM_API])
 
     def test_newer_local_version_does_not_query_downstream(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -280,16 +389,37 @@ class DownstreamUpdateShTest(unittest.TestCase):
             self.assertEqual(current.read_bytes(), original)
             self.assertIn("is not available yet", result.stderr)
 
-    def test_failed_post_install_validation_rolls_back_binary_and_bwrap(self) -> None:
+    def test_missing_code_mode_host_keeps_current_binary(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             current = root / "install" / "codex"
             write_executable(current, "0.146.0")
             original = current.read_bytes()
-            old_bwrap = root / "install" / "codex-resources" / "bwrap"
-            old_bwrap.parent.mkdir(parents=True)
-            old_bwrap.write_bytes(b"old bwrap\n")
-            old_bwrap.chmod(0o755)
+            write_official_release(root, "0.147.0")
+            write_release(
+                root,
+                "statusline-v0.147.0-r1",
+                "0.147.0",
+                include_host=False,
+            )
+
+            result = run_updater(
+                root, current, "0.146.0", "statusline-v0.146.0-r4"
+            )
+
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(current.read_bytes(), original)
+            self.assertIn("not a complete Codex package", result.stderr)
+
+    def test_failed_post_install_validation_rolls_back_visible_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            current = root / "install" / "codex"
+            visible_host = root / "install" / "codex-code-mode-host"
+            write_executable(current, "0.146.0")
+            write_helper(visible_host, b"old host\n")
+            original = current.read_bytes()
+            original_host = visible_host.read_bytes()
             write_official_release(root, "0.147.0")
             write_release(
                 root,
@@ -303,9 +433,13 @@ class DownstreamUpdateShTest(unittest.TestCase):
             )
 
             self.assertEqual(result.returncode, 1)
+            self.assertFalse(current.is_symlink())
             self.assertEqual(current.read_bytes(), original)
-            if PLATFORM and PLATFORM.startswith("linux-"):
-                self.assertEqual(old_bwrap.read_bytes(), b"old bwrap\n")
+            self.assertFalse(visible_host.is_symlink())
+            self.assertEqual(visible_host.read_bytes(), original_host)
+            self.assertFalse(
+                (root / "codex-home" / "packages" / "standalone" / "current").exists()
+            )
             self.assertIn("installed binary validation failed", result.stderr)
 
 

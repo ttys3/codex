@@ -10,19 +10,37 @@ UP_TO_DATE_EXIT_CODE=10
 current_exe="${CODEX_CURRENT_EXE:-}"
 current_version="${CODEX_CURRENT_VERSION:-}"
 current_downstream_tag="${CODEX_CURRENT_DOWNSTREAM_TAG:-}"
+codex_home_dir="${CODEX_HOME:-$HOME/.codex}"
+bin_dir="${CODEX_INSTALL_DIR:-$HOME/.local/bin}"
+standalone_root="$codex_home_dir/packages/standalone"
+releases_dir="$standalone_root/releases"
+current_link="$standalone_root/current"
+
 tmp_dir=""
-exe_backup=""
-resource_backup=""
-new_exe_tmp=""
-new_resource_tmp=""
-resource_existed="false"
-exe_replaced="false"
-resource_replaced="false"
+stage_release=""
+release_dir=""
+release_created="false"
+current_link_tmp=""
+visible_exe_tmp=""
+visible_host_tmp=""
+current_link_backup=""
+visible_exe_backup=""
+visible_host_backup=""
+current_link_existed="false"
+visible_exe_existed="false"
+visible_host_existed="false"
+current_link_replaced="false"
+visible_exe_replaced="false"
+visible_host_replaced="false"
 update_committed="false"
 
 fail() {
   printf 'Codex downstream update failed: %s\n' "$1" >&2
   exit 1
+}
+
+path_exists() {
+  [ -e "$1" ] || [ -L "$1" ]
 }
 
 download_text() {
@@ -87,25 +105,83 @@ file_sha256() {
   fi
 }
 
-restore_file() {
-  backup="$1"
-  destination="$2"
-  destination_dir="$(dirname "$destination")"
-  restore_tmp="$(mktemp "$destination_dir/.codex-restore.XXXXXX")"
-  cp -p "$backup" "$restore_tmp"
-  mv -f "$restore_tmp" "$destination"
+resolve_path() {
+  resolve_candidate="$1"
+  case "$resolve_candidate" in
+    /*) ;;
+    *) resolve_candidate="$(pwd)/$resolve_candidate" ;;
+  esac
+
+  resolve_depth=0
+  while [ -L "$resolve_candidate" ]; do
+    resolve_depth=$((resolve_depth + 1))
+    [ "$resolve_depth" -le 40 ] || return 1
+    resolve_target="$(readlink "$resolve_candidate")" || return 1
+    case "$resolve_target" in
+      /*) resolve_candidate="$resolve_target" ;;
+      *) resolve_candidate="$(dirname "$resolve_candidate")/$resolve_target" ;;
+    esac
+  done
+
+  resolve_dir="$(CDPATH='' cd -- "$(dirname "$resolve_candidate")" && pwd -P)" \
+    || return 1
+  printf '%s/%s\n' "$resolve_dir" "$(basename "$resolve_candidate")"
+}
+
+package_dir_is_complete() {
+  check_dir="$1"
+  check_version="$2"
+  check_target="$3"
+
+  [ -f "$check_dir/codex-package.json" ] &&
+    [ -x "$check_dir/bin/codex" ] &&
+    [ -x "$check_dir/bin/codex-code-mode-host" ] &&
+    [ -x "$check_dir/codex-path/rg" ] &&
+    [ -x "$check_dir/codex-resources/zsh/bin/zsh" ] || return 1
+  grep -Eq \
+    "\"target\"[[:space:]]*:[[:space:]]*\"${check_target}\"" \
+    "$check_dir/codex-package.json" || return 1
+  grep -Eq \
+    '"variant"[[:space:]]*:[[:space:]]*"codex"' \
+    "$check_dir/codex-package.json" || return 1
+  case "$check_target" in
+    *linux*) [ -x "$check_dir/codex-resources/bwrap" ] || return 1 ;;
+  esac
+  [ "$(version_from_binary "$check_dir/bin/codex" || true)" = "$check_version" ]
+}
+
+installation_is_complete() {
+  check_exe="$(resolve_path "$1" 2>/dev/null || true)"
+  [ -n "$check_exe" ] || return 1
+  check_bin_dir="$(dirname "$check_exe")"
+  [ "$(basename "$check_bin_dir")" = "bin" ] || return 1
+  check_package_dir="$(dirname "$check_bin_dir")"
+  package_dir_is_complete "$check_package_dir" "$2" "$3"
+}
+
+restore_moved_path() {
+  restore_backup="$1"
+  restore_destination="$2"
+  if path_exists "$restore_destination"; then
+    rm -f "$restore_destination" || return 1
+  fi
+  if path_exists "$restore_backup"; then
+    mv -f "$restore_backup" "$restore_destination" || return 1
+  fi
 }
 
 rollback() {
-  if [ "$exe_replaced" = "true" ] && [ -n "$exe_backup" ]; then
-    restore_file "$exe_backup" "$current_exe" || true
+  if [ "$visible_host_replaced" = "true" ]; then
+    restore_moved_path "$visible_host_backup" "$visible_host_path" || true
   fi
-  if [ "$resource_replaced" = "true" ]; then
-    if [ "$resource_existed" = "true" ]; then
-      restore_file "$resource_backup" "$resource_path" || true
-    else
-      rm -f "$resource_path" || true
-    fi
+  if [ "$visible_exe_replaced" = "true" ]; then
+    restore_moved_path "$visible_exe_backup" "$visible_exe_path" || true
+  fi
+  if [ "$current_link_replaced" = "true" ]; then
+    restore_moved_path "$current_link_backup" "$current_link" || true
+  fi
+  if [ "$release_created" = "true" ] && [ -n "$release_dir" ]; then
+    rm -rf "$release_dir" || true
   fi
 }
 
@@ -115,14 +191,19 @@ cleanup() {
   if [ "$update_committed" != "true" ]; then
     rollback
   fi
-  if [ -n "$new_exe_tmp" ]; then
-    rm -f "$new_exe_tmp"
-  fi
-  if [ -n "$new_resource_tmp" ]; then
-    rm -f "$new_resource_tmp"
+  for cleanup_path in \
+    "$current_link_tmp" \
+    "$visible_exe_tmp" \
+    "$visible_host_tmp"; do
+    if [ -n "$cleanup_path" ]; then
+      rm -f "$cleanup_path" || true
+    fi
+  done
+  if [ -n "$stage_release" ]; then
+    rm -rf "$stage_release" || true
   fi
   if [ -n "$tmp_dir" ]; then
-    rm -rf "$tmp_dir"
+    rm -rf "$tmp_dir" || true
   fi
   exit "$status"
 }
@@ -147,6 +228,9 @@ if [ -z "$current_exe" ]; then
 fi
 [ -n "$current_exe" ] || fail "could not resolve the current Codex executable"
 [ -f "$current_exe" ] || fail "current Codex executable does not exist: $current_exe"
+resolved_current_exe="$(resolve_path "$current_exe" 2>/dev/null || true)"
+[ -n "$resolved_current_exe" ] \
+  || fail "could not resolve the current Codex executable path"
 
 if [ -z "$current_version" ]; then
   current_version="$(version_from_binary "$current_exe" || true)"
@@ -177,6 +261,29 @@ if [ -n "$current_downstream_tag" ]; then
     || fail "current downstream release tag does not match Codex $current_version"
 fi
 
+case "$(uname -s):$(uname -m)" in
+  Linux:x86_64 | Linux:amd64)
+    platform="linux-amd64"
+    target="x86_64-unknown-linux-musl"
+    ;;
+  Linux:aarch64 | Linux:arm64)
+    platform="linux-arm64"
+    target="aarch64-unknown-linux-musl"
+    ;;
+  Darwin:arm64 | Darwin:aarch64)
+    platform="macos-arm64"
+    target="aarch64-apple-darwin"
+    ;;
+  *)
+    fail "unsupported update platform: $(uname -s) $(uname -m)"
+    ;;
+esac
+
+install_complete="false"
+if installation_is_complete "$resolved_current_exe" "$current_version" "$target"; then
+  install_complete="true"
+fi
+
 downstream_json="$(download_text "$DOWNSTREAM_LATEST_API")" \
   || fail "could not query the downstream release API"
 downstream_tag="$(printf '%s\n' "$downstream_json" | release_tag_from_json)"
@@ -188,30 +295,24 @@ downstream_version="${downstream_version%-r*}"
 [ "$downstream_version" = "$official_version" ] \
   || fail "downstream build for official Codex $official_version is not available yet"
 
+repair_install="false"
 if [ "$official_update" != "true" ]; then
   current_revision="${current_downstream_tag##*-r}"
   downstream_revision="${downstream_tag##*-r}"
-  if [ "$downstream_revision" -le "$current_revision" ]; then
+  if [ "$downstream_revision" -lt "$current_revision" ]; then
     printf 'Codex is already up to date (%s; downstream latest is %s).\n' \
       "$current_downstream_tag" "$downstream_tag"
     exit "$UP_TO_DATE_EXIT_CODE"
   fi
+  if [ "$downstream_revision" -eq "$current_revision" ]; then
+    if [ "$install_complete" = "true" ]; then
+      printf 'Codex is already up to date (%s; downstream latest is %s).\n' \
+        "$current_downstream_tag" "$downstream_tag"
+      exit "$UP_TO_DATE_EXIT_CODE"
+    fi
+    repair_install="true"
+  fi
 fi
-
-case "$(uname -s):$(uname -m)" in
-  Linux:x86_64 | Linux:amd64)
-    platform="linux-amd64"
-    ;;
-  Linux:aarch64 | Linux:arm64)
-    platform="linux-arm64"
-    ;;
-  Darwin:arm64 | Darwin:aarch64)
-    platform="macos-arm64"
-    ;;
-  *)
-    fail "unsupported update platform: $(uname -s) $(uname -m)"
-    ;;
-esac
 
 asset="codex-${downstream_tag}-${platform}.tar.gz"
 asset_url="${DOWNSTREAM_RELEASES_BASE}/${downstream_tag}/${asset}"
@@ -219,8 +320,6 @@ checksum_url="${asset_url}.sha256"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/codex-downstream-update.XXXXXX")"
 archive_path="$tmp_dir/$asset"
 checksum_path="$tmp_dir/${asset}.sha256"
-extract_dir="$tmp_dir/extract"
-mkdir -p "$extract_dir"
 
 printf 'Downloading downstream Codex %s for %s...\n' "$official_version" "$platform"
 download_file "$asset_url" "$archive_path" \
@@ -238,54 +337,109 @@ expected_digest="$(awk -v asset="$asset" '
 actual_digest="$(file_sha256 "$archive_path")"
 [ "$actual_digest" = "$expected_digest" ] || fail "archive SHA-256 mismatch"
 
-tar -xzf "$archive_path" -C "$extract_dir"
-new_exe="$extract_dir/codex"
-[ -x "$new_exe" ] || fail "archive does not contain an executable codex binary"
-new_version="$(version_from_binary "$new_exe" || true)"
-[ "$new_version" = "$official_version" ] \
-  || fail "downloaded binary reports $new_version, expected $official_version"
+mkdir -p "$releases_dir" "$bin_dir"
+standalone_root="$(CDPATH='' cd -- "$standalone_root" && pwd -P)"
+releases_dir="$standalone_root/releases"
+current_link="$standalone_root/current"
+bin_dir="$(CDPATH='' cd -- "$bin_dir" && pwd -P)"
 
-exe_dir="$(CDPATH='' cd -- "$(dirname "$current_exe")" && pwd -P)"
-current_exe="$exe_dir/$(basename "$current_exe")"
-[ -w "$exe_dir" ] || fail "executable directory is not writable: $exe_dir"
+release_dir="$releases_dir/${downstream_tag}-${target}"
+stage_release="$releases_dir/.staging.${downstream_tag}.$$"
+path_exists "$stage_release" && fail "staging path already exists: $stage_release"
+mkdir "$stage_release"
+tar -xzf "$archive_path" -C "$stage_release"
+package_dir_is_complete "$stage_release" "$official_version" "$target" \
+  || fail "downloaded archive is not a complete Codex package"
 
-package_root="$(dirname "$exe_dir")"
-if [ "$(basename "$exe_dir")" = "bin" ] && [ -f "$package_root/codex-package.json" ]; then
-  resource_dir="$package_root/codex-resources"
+if path_exists "$release_dir"; then
+  package_dir_is_complete "$release_dir" "$official_version" "$target" \
+    || fail "existing downstream release directory is incomplete: $release_dir"
+  rm -rf "$stage_release"
+  stage_release=""
 else
-  resource_dir="$exe_dir/codex-resources"
-fi
-resource_path="$resource_dir/bwrap"
-
-exe_backup="$tmp_dir/current-codex.backup"
-cp -p "$current_exe" "$exe_backup"
-new_exe_tmp="$(mktemp "$exe_dir/.codex-update.XXXXXX")"
-cp "$new_exe" "$new_exe_tmp"
-chmod 0755 "$new_exe_tmp"
-
-if [ "$platform" = "linux-amd64" ] || [ "$platform" = "linux-arm64" ]; then
-  new_resource="$extract_dir/codex-resources/bwrap"
-  [ -x "$new_resource" ] || fail "Linux archive does not contain executable bwrap"
-  mkdir -p "$resource_dir"
-  [ -w "$resource_dir" ] || fail "resource directory is not writable: $resource_dir"
-  resource_backup="$tmp_dir/current-bwrap.backup"
-  if [ -e "$resource_path" ]; then
-    resource_existed="true"
-    cp -p "$resource_path" "$resource_backup"
-  fi
-  new_resource_tmp="$(mktemp "$resource_dir/.bwrap-update.XXXXXX")"
-  cp "$new_resource" "$new_resource_tmp"
-  chmod 0755 "$new_resource_tmp"
-  mv -f "$new_resource_tmp" "$resource_path"
-  resource_replaced="true"
+  mv "$stage_release" "$release_dir"
+  stage_release=""
+  release_created="true"
 fi
 
-mv -f "$new_exe_tmp" "$current_exe"
-exe_replaced="true"
-installed_version="$(version_from_binary "$current_exe" || true)"
+current_exe_dir="$(dirname "$resolved_current_exe")"
+current_package_root="$(dirname "$current_exe_dir")"
+if [ "$(basename "$current_exe_dir")" = "bin" ] &&
+  [ -f "$current_package_root/codex-package.json" ]; then
+  visible_exe_path="$bin_dir/codex"
+else
+  visible_exe_path="$resolved_current_exe"
+  bin_dir="$(dirname "$visible_exe_path")"
+fi
+visible_host_path="$bin_dir/codex-code-mode-host"
+[ -w "$bin_dir" ] || fail "installation directory is not writable: $bin_dir"
+
+current_link_tmp="$standalone_root/.current.$$"
+visible_exe_tmp="$bin_dir/.codex.$$"
+visible_host_tmp="$bin_dir/.codex-code-mode-host.$$"
+current_link_backup="$standalone_root/.current-backup.$$"
+visible_exe_backup="$bin_dir/.codex-backup.$$"
+visible_host_backup="$bin_dir/.codex-code-mode-host-backup.$$"
+for reserved_path in \
+  "$current_link_tmp" \
+  "$visible_exe_tmp" \
+  "$visible_host_tmp" \
+  "$current_link_backup" \
+  "$visible_exe_backup" \
+  "$visible_host_backup"; do
+  path_exists "$reserved_path" && fail "update path already exists: $reserved_path"
+done
+
+ln -s "$release_dir" "$current_link_tmp"
+ln -s "$current_link/bin/codex" "$visible_exe_tmp"
+ln -s "$current_link/bin/codex-code-mode-host" "$visible_host_tmp"
+
+if path_exists "$current_link"; then
+  mv "$current_link" "$current_link_backup"
+  current_link_existed="true"
+fi
+mv "$current_link_tmp" "$current_link"
+current_link_tmp=""
+current_link_replaced="true"
+
+if path_exists "$visible_exe_path"; then
+  mv "$visible_exe_path" "$visible_exe_backup"
+  visible_exe_existed="true"
+fi
+mv "$visible_exe_tmp" "$visible_exe_path"
+visible_exe_tmp=""
+visible_exe_replaced="true"
+
+if path_exists "$visible_host_path"; then
+  mv "$visible_host_path" "$visible_host_backup"
+  visible_host_existed="true"
+fi
+mv "$visible_host_tmp" "$visible_host_path"
+visible_host_tmp=""
+visible_host_replaced="true"
+
+installed_version="$(version_from_binary "$visible_exe_path" || true)"
 [ "$installed_version" = "$official_version" ] \
   || fail "installed binary validation failed"
+[ -x "$visible_host_path" ] || fail "installed code-mode host validation failed"
+installation_is_complete "$visible_exe_path" "$official_version" "$target" \
+  || fail "installed Codex package validation failed"
 
 update_committed="true"
-printf 'Updated Codex from %s to downstream %s (%s).\n' \
-  "${current_downstream_tag:-$current_version}" "$official_version" "$downstream_tag"
+if [ "$current_link_existed" = "true" ]; then
+  rm -f "$current_link_backup" || true
+fi
+if [ "$visible_exe_existed" = "true" ]; then
+  rm -f "$visible_exe_backup" || true
+fi
+if [ "$visible_host_existed" = "true" ]; then
+  rm -f "$visible_host_backup" || true
+fi
+
+if [ "$repair_install" = "true" ]; then
+  printf 'Repaired downstream Codex package %s (%s).\n' \
+    "$official_version" "$downstream_tag"
+else
+  printf 'Updated Codex from %s to downstream %s (%s).\n' \
+    "${current_downstream_tag:-$current_version}" "$official_version" "$downstream_tag"
+fi

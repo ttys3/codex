@@ -306,12 +306,38 @@ jobs:
           digest="$(sha256sum "$bwrap_path" | awk '{print $1}')"
           echo "CODEX_BWRAP_SHA256=$digest" >> "$GITHUB_ENV"
 
-      - name: Build Codex
+      - name: Build Codex package binaries
         shell: bash
         env:
           CODEX_DOWNSTREAM_BUILD: "1"
           CODEX_DOWNSTREAM_RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
-        run: cargo build --target "$TARGET" --release --bin codex
+        run: >-
+          cargo build --target "$TARGET" --release
+          --bin codex
+          --bin codex-code-mode-host
+
+      - name: Download official patched zsh manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          zsh_release_tag="$(
+            sed -n \
+              's/^[[:space:]]*CODEX_ZSH_RELEASE_TAG:[[:space:]]*//p' \
+              "${GITHUB_WORKSPACE}/.github/workflows/rust-release.yml" \
+              | head -n 1
+          )"
+          if [[ ! "$zsh_release_tag" =~ ^codex-zsh-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Could not resolve the upstream patched zsh release tag" >&2
+            exit 1
+          fi
+
+          zsh_manifest="${RUNNER_TEMP}/codex-zsh"
+          curl -fsSL \
+            "https://github.com/${UPSTREAM_REPOSITORY}/releases/download/${zsh_release_tag}/codex-zsh" \
+            -o "$zsh_manifest"
+          grep -Fq 'https://github.com/openai/codex/releases/download/' "$zsh_manifest"
+          echo "CODEX_ZSH_MANIFEST=$zsh_manifest" >> "$GITHUB_ENV"
+          echo "Using OpenAI patched zsh release $zsh_release_tag"
 
       - name: Strip, verify, and package
         shell: bash
@@ -322,38 +348,62 @@ jobs:
         run: |
           set -euo pipefail
           codex_path="target/${TARGET}/release/codex"
-          if [[ "$IS_LINUX" == "true" ]]; then
-            strip --strip-debug --strip-unneeded "$codex_path"
-          else
-            strip -x "$codex_path"
-          fi
+          code_mode_host_path="target/${TARGET}/release/codex-code-mode-host"
+          for binary_path in "$codex_path" "$code_mode_host_path"; do
+            if [[ "$IS_LINUX" == "true" ]]; then
+              strip --strip-debug --strip-unneeded "$binary_path"
+            else
+              strip -x "$binary_path"
+            fi
 
-          file_output="$(file "$codex_path")"
-          echo "$file_output"
-          case "$PLATFORM" in
-            linux-amd64)
-              grep -Eq 'ELF 64-bit.*x86-64' <<< "$file_output"
-              ;;
-            linux-arm64)
-              grep -Eq 'ELF 64-bit.*ARM aarch64' <<< "$file_output"
-              ;;
-            macos-arm64)
-              grep -Eq 'Mach-O 64-bit executable arm64' <<< "$file_output"
-              ;;
-            *)
-              echo "Unexpected platform: $PLATFORM" >&2
-              exit 1
-              ;;
-          esac
+            file_output="$(file "$binary_path")"
+            echo "$file_output"
+            case "$PLATFORM" in
+              linux-amd64)
+                grep -Eq 'ELF 64-bit.*x86-64' <<< "$file_output"
+                ;;
+              linux-arm64)
+                grep -Eq 'ELF 64-bit.*ARM aarch64' <<< "$file_output"
+                ;;
+              macos-arm64)
+                grep -Eq 'Mach-O 64-bit executable arm64' <<< "$file_output"
+                ;;
+              *)
+                echo "Unexpected platform: $PLATFORM" >&2
+                exit 1
+                ;;
+            esac
+          done
 
           package_root="${RUNNER_TEMP}/package"
-          mkdir -p "$package_root"
-          install -m 0755 "$codex_path" "$package_root/codex"
+          package_args=(
+            "${GITHUB_WORKSPACE}/scripts/build_codex_package.py"
+            --target "$TARGET"
+            --variant codex
+            --entrypoint-bin "$codex_path"
+            --code-mode-host-bin "$code_mode_host_path"
+            --zsh-manifest "$CODEX_ZSH_MANIFEST"
+            --package-dir "$package_root"
+            --force
+          )
           if [[ "$IS_LINUX" == "true" ]]; then
-            mkdir -p "$package_root/codex-resources"
-            install -m 0755 "target/${TARGET}/release/bwrap" \
-              "$package_root/codex-resources/bwrap"
+            package_args+=(
+              --bwrap-bin "target/${TARGET}/release/bwrap"
+            )
           fi
+          python3 "${package_args[@]}"
+
+          # Keep the top-level entrypoints so the updater embedded in r1 can
+          # consume this archive before r2 migrates the install to the package
+          # layout on the next update/repair run.
+          ln -s "bin/codex" "$package_root/codex"
+          ln -s "bin/codex-code-mode-host" "$package_root/codex-code-mode-host"
+
+          test -f "$package_root/codex-package.json"
+          test -x "$package_root/bin/codex"
+          test -x "$package_root/bin/codex-code-mode-host"
+          test -x "$package_root/codex-path/rg"
+          test -x "$package_root/codex-resources/zsh/bin/zsh"
 
           asset="codex-${RELEASE_TAG}-${PLATFORM}.tar.gz"
           tar -C "$package_root" -czf "${RUNNER_TEMP}/${asset}" .
@@ -415,6 +465,24 @@ jobs:
           for checksum in "${checksums[@]}"; do
             (cd dist && sha256sum -c "$(basename "$checksum")")
           done
+          for archive in "${archives[@]}"; do
+            archive_entries="${RUNNER_TEMP}/$(basename "$archive").entries"
+            tar -tzf "$archive" | sed 's#^\./##' > "$archive_entries"
+            for required_entry in \
+              codex \
+              codex-package.json \
+              bin/codex \
+              bin/codex-code-mode-host \
+              codex-path/rg \
+              codex-resources/zsh/bin/zsh; do
+              grep -Fxq "$required_entry" "$archive_entries" \
+                || { echo "$archive is missing $required_entry" >&2; exit 1; }
+            done
+            if [[ "$archive" == *-linux-*.tar.gz ]]; then
+              grep -Fxq 'codex-resources/bwrap' "$archive_entries" \
+                || { echo "$archive is missing codex-resources/bwrap" >&2; exit 1; }
+            fi
+          done
 
       - name: Fast-forward maintained branch
         shell: bash
@@ -468,14 +536,17 @@ jobs:
           This release carries the status-line extensions documented in \
           [DOWNSTREAM.md](https://github.com/${GITHUB_REPOSITORY}/blob/${RELEASE_TAG}/DOWNSTREAM.md).
 
-          The bundled `codex update` checks OpenAI's official latest Release first and downloads
+          The bundled \`codex update\` checks OpenAI's official latest Release first and downloads
           verified update archives only from this fork's GitHub Release.
 
           Release assets are limited to:
 
-          - Linux amd64 (musl; includes the required bundled bwrap resource)
-          - Linux arm64 (musl; includes the required bundled bwrap resource)
-          - macOS arm64 (unsigned)
+          Every package includes \`codex-code-mode-host\`, OpenAI's pinned patched zsh, and the
+          pinned ripgrep resource. Linux packages also include the required bundled bwrap.
+
+          - Linux amd64 (musl)
+          - Linux arm64 (musl)
+          - macOS arm64 (unsigned Codex binaries)
           EOF
 
           prerelease_args=()

@@ -37,9 +37,20 @@ version is newer or this fork has a newer `rN` revision for the same official ve
 The updater accepts a downstream release only when its `statusline-vX.Y.Z-rN` tag matches the
 official version. It downloads the archive and `.sha256` sidecar for the current supported
 platform exclusively from `ttys3/codex` GitHub Releases, verifies the checksum and the downloaded
-binary's reported version, and then replaces the current binary atomically. Linux updates also
-replace the bundled `codex-resources/bwrap`. A failed post-install validation rolls both files
-back. The installation directory must be writable by the current user.
+binary's reported version, and installs the complete canonical package under
+`$CODEX_HOME/packages/standalone/releases`. The visible `codex` and `codex-code-mode-host`
+commands point through the managed `current` symlink, so switching a release is atomic.
+
+Every package contains `codex`, `codex-code-mode-host`, pinned ripgrep, and the patched zsh fork
+selected from OpenAI's official `codex-zsh` release for the target architecture. Linux packages
+also contain the bundled `codex-resources/bwrap`. The updater validates all required components
+and rolls back the visible commands and `current` link after any failed post-install check. It
+also repairs a current-version flat install that is missing the canonical package layout.
+
+Release r1 used a flat archive and its embedded updater only copies `codex` and Linux `bwrap`.
+The package keeps top-level compatibility entrypoints so r1 can install the r2 binary; running
+`codex update` once more from r2 performs the one-time migration and installs the remaining
+components.
 
 The downstream update script is embedded in the binary, so `codex update` does not fetch mutable
 installer code at runtime. The app-server daemon uses the same embedded path in downstream builds
@@ -57,6 +68,10 @@ upstream tag. It then validates the patch and builds exactly these release packa
 - `linux-amd64` (`x86_64-unknown-linux-musl`)
 - `linux-arm64` (`aarch64-unknown-linux-musl`)
 - `macos-arm64` (`aarch64-apple-darwin`, unsigned)
+
+Each build compiles both `codex` and `codex-code-mode-host`. Packaging downloads OpenAI's patched
+zsh manifest from the `CODEX_ZSH_RELEASE_TAG` pinned by the matching upstream release workflow;
+the package builder selects and verifies the asset for the current target architecture.
 
 Only after every validation and build job succeeds does it fast-forward `downstream/statusline`,
 create a `statusline-vX.Y.Z-rN` tag, and publish a GitHub Release. Merge conflicts, test failures,
