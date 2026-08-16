@@ -85,7 +85,7 @@ mirror branch.
 
 ## Release workflow pitfalls
 
-Three behaviours in this workflow have already broken or silently degraded a release run.
+Four behaviours in this workflow have already broken or silently degraded a release run.
 
 `actions/upload-artifact` runs inside the macOS cross-compile container, and the runner translates
 host paths to container paths by rewriting an input's entire value as a single path. A multi-line
@@ -105,3 +105,14 @@ The publish job refuses to fast-forward once `downstream/statusline` has moved p
 commit. Pushing to the maintained branch while a release run is in flight aborts that run after
 every build has already succeeded, which wastes the whole run and burns its revision number. Wait
 for the run to finish before pushing.
+
+`Swatinem/rust-cache` prunes each profile directory down to `build/`, `.fingerprint/` and `deps/`
+before saving. The v8 build script unpacks `librusty_v8.a` into
+`target/<triple>/release/gn_out/obj` and points `rustc-link-search` there, so the library is
+deleted while the fingerprint asserting it was already unpacked is kept. A restored build then
+links against an empty `gn_out` and fails with ``could not find native static library `rusty_v8` ``.
+The build jobs therefore unpack the archive back into place after `setup-rusty-v8` runs. Clearing
+the fingerprint instead also works, but forces v8 through the compiler again and costs roughly a
+third of the build. Because rust-cache skips saving when the cache key already matches, `gn_out`
+never enters the cache and this unpack runs every time; it takes about a second. Any crate that
+writes outside `build/`, `.fingerprint/` and `deps/` within a profile directory hits the same trap.
