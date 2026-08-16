@@ -314,6 +314,20 @@ jobs:
           key: ${{ matrix.target }}
           cache-bin: false
 
+      - name: Force the rusty_v8 build script to rerun
+        shell: bash
+        run: |
+          set -euo pipefail
+          # rust-cache keeps only build/, .fingerprint/ and deps/ inside a
+          # profile directory, so the librusty_v8.a that the v8 build script
+          # unpacks into target/<triple>/release/gn_out/obj never reaches the
+          # cache while the fingerprint that says "already unpacked" does. A
+          # restored build then links against an empty gn_out and fails with
+          # "could not find native static library `rusty_v8`". Dropping the
+          # fingerprint makes Cargo rerun the build script, which repopulates
+          # gn_out from the archive setup-rusty-v8 already downloaded.
+          rm -rf "target/${TARGET}/release/.fingerprint"/v8-*
+
       - name: Install Zig
         if: matrix.is_linux
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
@@ -566,6 +580,15 @@ jobs:
           workspaces: codex-rs
           key: aarch64-apple-darwin
           cache-bin: false
+
+      # See the matching step in the Linux build job: rust-cache drops
+      # target/<triple>/release/gn_out but keeps the fingerprint claiming the
+      # static library is already unpacked, so the v8 build script has to rerun.
+      - name: Force the rusty_v8 build script to rerun
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "target/${TARGET}/release/.fingerprint"/v8-*
 
       - name: Configure rusty_v8 artifacts
         uses: ./.github/actions/setup-rusty-v8
