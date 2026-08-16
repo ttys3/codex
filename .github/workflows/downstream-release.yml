@@ -314,20 +314,6 @@ jobs:
           key: ${{ matrix.target }}
           cache-bin: false
 
-      - name: Force the rusty_v8 build script to rerun
-        shell: bash
-        run: |
-          set -euo pipefail
-          # rust-cache keeps only build/, .fingerprint/ and deps/ inside a
-          # profile directory, so the librusty_v8.a that the v8 build script
-          # unpacks into target/<triple>/release/gn_out/obj never reaches the
-          # cache while the fingerprint that says "already unpacked" does. A
-          # restored build then links against an empty gn_out and fails with
-          # "could not find native static library `rusty_v8`". Dropping the
-          # fingerprint makes Cargo rerun the build script, which repopulates
-          # gn_out from the archive setup-rusty-v8 already downloaded.
-          rm -rf "target/${TARGET}/release/.fingerprint"/v8-*
-
       - name: Install Zig
         if: matrix.is_linux
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
@@ -358,6 +344,30 @@ jobs:
         uses: ./.github/actions/setup-rusty-v8
         with:
           target: ${{ matrix.target }}
+
+      # rust-cache prunes a profile directory down to build/, .fingerprint/ and
+      # deps/, so the librusty_v8.a that the v8 build script unpacks into
+      # gn_out/obj never reaches the cache while the fingerprint claiming it was
+      # already unpacked does. A restored build then links against an empty
+      # gn_out and fails with "could not find native static library `rusty_v8`".
+      # Unpacking the archive back into place keeps that fingerprint valid, so
+      # neither v8 nor the ~125 crates behind it are rebuilt; clearing the
+      # fingerprint instead would force all of them through the compiler again.
+      # This mirrors the build script's own copy_archive(), which gunzips the
+      # archive when it starts with the gzip magic bytes.
+      - name: Restore the rusty_v8 static library dropped by the cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          lib_dir="target/${TARGET}/release/gn_out/obj"
+          lib="${lib_dir}/librusty_v8.a"
+          if [[ -f "$lib" ]]; then
+            echo "librusty_v8.a survived the cache round trip"
+            exit 0
+          fi
+          mkdir -p "$lib_dir"
+          gzip -dc "$RUSTY_V8_ARCHIVE" > "$lib"
+          echo "Unpacked $(du -h "$lib" | cut -f1) to $lib"
 
       - name: Build and hash bwrap
         if: matrix.is_linux
@@ -581,19 +591,28 @@ jobs:
           key: aarch64-apple-darwin
           cache-bin: false
 
-      # See the matching step in the Linux build job: rust-cache drops
-      # target/<triple>/release/gn_out but keeps the fingerprint claiming the
-      # static library is already unpacked, so the v8 build script has to rerun.
-      - name: Force the rusty_v8 build script to rerun
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf "target/${TARGET}/release/.fingerprint"/v8-*
-
       - name: Configure rusty_v8 artifacts
         uses: ./.github/actions/setup-rusty-v8
         with:
           target: aarch64-apple-darwin
+
+      # See the matching step in the Linux build job: rust-cache drops
+      # gn_out/obj while keeping the fingerprint that claims the static library
+      # is already unpacked, so put the library back rather than invalidating
+      # the fingerprint and rebuilding v8 along with everything behind it.
+      - name: Restore the rusty_v8 static library dropped by the cache
+        shell: bash
+        run: |
+          set -euo pipefail
+          lib_dir="target/${TARGET}/release/gn_out/obj"
+          lib="${lib_dir}/librusty_v8.a"
+          if [[ -f "$lib" ]]; then
+            echo "librusty_v8.a survived the cache round trip"
+            exit 0
+          fi
+          mkdir -p "$lib_dir"
+          gzip -dc "$RUSTY_V8_ARCHIVE" > "$lib"
+          echo "Unpacked $(du -h "$lib" | cut -f1) to $lib"
 
       - name: Build Codex package binaries
         shell: bash
