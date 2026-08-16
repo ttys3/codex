@@ -251,8 +251,10 @@ jobs:
       - name: Install sccache
         uses: taiki-e/install-action@288e746965032cfcc232e09af2daf5f23c14d780 # v2.86.1
         with:
-          tool: sccache
-          version: 0.17.0
+          # install-action takes the version through the tool input; a separate
+          # `version` key is not a valid input and is silently ignored, which
+          # left every build resolving whatever the manifest called latest.
+          tool: sccache@0.17.0
 
       # The Actions cache endpoints are only injected into JavaScript actions,
       # so re-export them for the sccache server spawned by the run steps below.
@@ -493,8 +495,10 @@ jobs:
       - name: Install sccache
         uses: taiki-e/install-action@288e746965032cfcc232e09af2daf5f23c14d780 # v2.86.1
         with:
-          tool: sccache
-          version: 0.17.0
+          # install-action takes the version through the tool input; a separate
+          # `version` key is not a valid input and is silently ignored, which
+          # left every build resolving whatever the manifest called latest.
+          tool: sccache@0.17.0
 
       # The Actions cache endpoints are only injected into JavaScript actions,
       # so re-export them for the sccache server spawned by the run steps below.
