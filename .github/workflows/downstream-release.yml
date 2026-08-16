@@ -166,6 +166,17 @@ jobs:
         with:
           tool: nextest@0.9.103
 
+      # setup-ci points CARGO_TARGET_DIR at $HOME/.cache/codex-ci/cargo-target,
+      # outside the workspace, so rust-cache cannot apply its target pruning
+      # here. Cache only the registry: a full test-profile target directory
+      # would be several GB and crowd the 10 GB repository cache limit that the
+      # three build jobs below depend on.
+      - uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
+        with:
+          workspaces: codex-rs
+          cache-targets: false
+          cache-bin: false
+
       - name: Install Linux test dependencies
         shell: bash
         run: |
@@ -292,6 +303,16 @@ jobs:
           echo "CARGO_HOME=${cargo_home}" >> "$GITHUB_ENV"
           echo "${cargo_home}/bin" >> "$GITHUB_PATH"
           : > "${cargo_home}/config.toml"
+
+      # Must run after the hermetic Cargo home is exported: rust-cache reads
+      # CARGO_HOME from the environment, so restoring earlier would populate the
+      # runner's default ~/.cargo instead. `key` separates the matrix legs,
+      # which otherwise share the `build` job id.
+      - uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
+        with:
+          workspaces: codex-rs
+          key: ${{ matrix.target }}
+          cache-bin: false
 
       - name: Install Zig
         if: matrix.is_linux
@@ -535,6 +556,16 @@ jobs:
           test -d "$SDKROOT"
           command -v aarch64-apple-darwin-ar
           command -v aarch64-apple-darwin-strip
+
+      # Keep `workspaces` a single relative path. This job runs in a container,
+      # where the runner rewrites an input's entire value as one host path, so a
+      # multi-line or absolute value would survive translation only in part —
+      # the same trap that truncated the artifact upload glob.
+      - uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
+        with:
+          workspaces: codex-rs
+          key: aarch64-apple-darwin
+          cache-bin: false
 
       - name: Configure rusty_v8 artifacts
         uses: ./.github/actions/setup-rusty-v8
