@@ -444,9 +444,11 @@ jobs:
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: release-${{ matrix.platform }}
-          path: |
-            ${{ runner.temp }}/codex-*.tar.gz
-            ${{ runner.temp }}/codex-*.tar.gz.sha256
+          # Keep this a single-line glob: the runner translates host paths to
+          # container paths by rewriting the whole INPUT_PATH value as one path,
+          # so only the first line of a multi-line glob survives inside a
+          # container job.
+          path: ${{ runner.temp }}/codex-*.tar.gz*
           if-no-files-found: error
           retention-days: 7
 
@@ -614,9 +616,12 @@ jobs:
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: release-macos-arm64
-          path: |
-            ${{ runner.temp }}/codex-*.tar.gz
-            ${{ runner.temp }}/codex-*.tar.gz.sha256
+          # This job runs inside a container, where the runner rewrites the
+          # whole INPUT_PATH value as a single host path. A multi-line glob
+          # would leave every line but the first pointing at a host directory
+          # that does not exist in the container, silently dropping the
+          # checksum and pushing the archive under an `__w/_temp/` prefix.
+          path: ${{ runner.temp }}/codex-*.tar.gz*
           if-no-files-found: error
           retention-days: 7
 
