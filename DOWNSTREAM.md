@@ -82,3 +82,26 @@ candidate branches are retained for diagnosis; successful ones are removed.
 Scheduled workflows run from the repository default branch, so this fork intentionally uses
 `downstream/statusline` as its default branch. The `main` branch remains available as an upstream
 mirror branch.
+
+## Release workflow pitfalls
+
+Three behaviours in this workflow have already broken or silently degraded a release run.
+
+`actions/upload-artifact` runs inside the macOS cross-compile container, and the runner translates
+host paths to container paths by rewriting an input's entire value as a single path. A multi-line
+`path:` therefore keeps only its first line pointing inside the container, while every later line
+still names a host directory that does not exist there. The upload matches a subset of the intended
+files, falls back to `/` as the artifact root, and ships the archive under an `__w/_temp/` prefix
+where the publish job's asset check cannot find it. `if-no-files-found: error` does not catch this,
+because the first line still matches something. Keep artifact globs on a single line.
+
+`taiki-e/install-action` accepts only `tool`, `checksum` and `fallback`. A `version:` key is not an
+input: the runner logs `Unexpected input(s) 'version'` as a warning and installs whatever the
+pinned action's manifest calls latest. Write `tool: sccache@0.17.0` instead, and check that the
+pinned action is new enough to know that version, because the manifest ships inside the action and
+an old pin cannot resolve a recently released tool.
+
+The publish job refuses to fast-forward once `downstream/statusline` has moved past the candidate
+commit. Pushing to the maintained branch while a release run is in flight aborts that run after
+every build has already succeeded, which wastes the whole run and burns its revision number. Wait
+for the run to finish before pushing.
