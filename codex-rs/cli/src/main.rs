@@ -41,6 +41,7 @@ use std::io::IsTerminal;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use supports_color::Stream;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -88,13 +89,33 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::user_input::UserInput;
 use codex_terminal_detection::TerminalName;
 
+/// Version reported by `codex --version`.
+///
+/// Downstream builds append the release tag on a second line. The first line
+/// must keep the `<package> <semver>` shape: `version_from_binary` in both
+/// install scripts reads the trailing plain version off it, and
+/// `parse_codex_version` in the app-server daemon takes the second
+/// whitespace-separated token. Anything appended to the first line breaks the
+/// update path.
+fn version_string() -> &'static str {
+    match option_env!("CODEX_DOWNSTREAM_RELEASE_TAG") {
+        Some(tag) => {
+            static VERSION: OnceLock<String> = OnceLock::new();
+            VERSION
+                .get_or_init(|| format!("{}\ndownstream {tag}", env!("CARGO_PKG_VERSION")))
+                .as_str()
+        }
+        None => env!("CARGO_PKG_VERSION"),
+    }
+}
+
 /// Codex CLI
 ///
 /// If no subcommand is specified, options will be forwarded to the interactive CLI.
 #[derive(Debug, Parser)]
 #[clap(
     author,
-    version,
+    version = version_string(),
     // If a sub‑command is given, ignore requirements of the default args.
     subcommand_negates_reqs = true,
     // The executable is sometimes invoked via a platform‑specific name like
