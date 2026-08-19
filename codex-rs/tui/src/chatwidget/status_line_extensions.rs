@@ -169,7 +169,7 @@ fn status_line_command_refresh_interval(config: &StatusLineCommandConfig) -> Dur
 }
 
 fn normalize_status_line_command_output(stdout: &str) -> Option<String> {
-    let sanitized = sanitize_user_text(stdout);
+    let sanitized = sanitize_user_text(stdout.into());
     let first_non_empty_line = sanitized.lines().find(|line| !line.trim().is_empty())?;
     let normalized = first_non_empty_line
         .split_whitespace()
