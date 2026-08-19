@@ -111,15 +111,37 @@ jobs:
           current_commit="$(git rev-parse "${current_tag}^{commit}")"
           target_commit="$(git rev-parse "${upstream_tag}^{commit}")"
 
-          if [[ "$current_commit" != "$target_commit" ]]; then
-            if ! git merge-base --is-ancestor "$current_commit" "$target_commit"; then
-              echo "$upstream_tag is not a forward update from $current_tag" >&2
-              exit 1
-            fi
+          # Upstream tags every release on a commit that does nothing but bump the
+          # workspace version, and never merges that commit back into main. No two
+          # rust-v tags therefore share an ancestry line, so forward progress is a
+          # version comparison and not a history walk. sort -V orders X.Y.Z before
+          # X.Y.Z-alpha.N; Debian's `~` restores semver's prerelease order.
+          semver_key() { printf '%s' "${1#rust-v}" | tr '-' '~'; }
+          current_key="$(semver_key "$current_tag")"
+          target_key="$(semver_key "$upstream_tag")"
+          oldest_key="$(printf '%s\n%s\n' "$current_key" "$target_key" | sort -V | head -n 1)"
+          if [[ "$current_key" != "$target_key" && "$oldest_key" != "$current_key" ]]; then
+            echo "$upstream_tag is not a forward update from $current_tag" >&2
+            exit 1
+          fi
 
+          if [[ "$current_commit" != "$target_commit" ]]; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git merge --no-ff --no-commit "$target_commit"
+            if ! git merge --no-ff --no-commit "$target_commit"; then
+              # Both release commits rewrite the workspace version, so that line
+              # collides on every upstream bump. Upstream owns the field; take its
+              # value as long as the fork has kept its hands off the file.
+              unmerged="$(git diff --name-only --diff-filter=U)"
+              if [[ "$unmerged" != "codex-rs/Cargo.toml" ]] \
+                || ! git diff --quiet "$current_tag" HEAD -- codex-rs/Cargo.toml; then
+                echo "Merging $upstream_tag into $DOWNSTREAM_BRANCH left conflicts in:" >&2
+                awk '{ print "  " $0 }' <<< "$unmerged" >&2
+                exit 1
+              fi
+              git checkout --theirs -- codex-rs/Cargo.toml
+              git add -- codex-rs/Cargo.toml
+            fi
             printf '%s\n' "$upstream_tag" > "$marker_file"
             git add "$marker_file"
             git commit \

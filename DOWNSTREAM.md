@@ -63,7 +63,8 @@ base. The scheduled workflow checks every six hours for the latest stable `rust-
 tag. A manual run can select a prerelease tag and a downstream revision.
 
 The workflow creates a temporary candidate branch and merges only forward from the recorded
-upstream tag. It then validates the patch and builds exactly these release packages:
+upstream tag, judging forward by semantic version rather than by history. It then validates the
+patch and builds exactly these release packages:
 
 - `linux-amd64` (`x86_64-unknown-linux-musl`)
 - `linux-arm64` (`aarch64-unknown-linux-musl`)
@@ -85,7 +86,19 @@ mirror branch.
 
 ## Release workflow pitfalls
 
-Four behaviours in this workflow have already broken or silently degraded a release run.
+Five behaviours in this workflow have already broken or silently degraded a release run.
+
+Upstream builds every `rust-vX.Y.Z` tag on a throwaway commit that only rewrites the workspace
+version in `codex-rs/Cargo.toml`, and never merges that commit back into `main`, which keeps the
+version there at `0.0.0`. Each stable tag is therefore a leaf hanging off `main` rather than a
+point on it, and no two tags share an ancestry line. Testing forward progress with
+`git merge-base --is-ancestor` between two tagged commits consequently fails for *every* upstream
+bump, not just for a genuine rollback, which is why the fork sat on `rust-v0.147.0` while upstream
+shipped `rust-v0.148.0`. Compare versions instead. `sort -V` alone is not enough: it orders
+`0.148.0` before `0.148.0-alpha.23`, the opposite of semver, so translate the prerelease `-` into
+Debian's `~` before sorting. The same topology makes the two release commits collide on the version
+line during every merge; upstream owns that field, so the workflow resolves it to the incoming
+value once it has confirmed the fork never touched the file.
 
 `actions/upload-artifact` runs inside the macOS cross-compile container, and the runner translates
 host paths to container paths by rewriting an input's entire value as a single path. A multi-line
