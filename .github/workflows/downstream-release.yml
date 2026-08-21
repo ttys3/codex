@@ -130,7 +130,28 @@ jobs:
           if [[ "$current_commit" != "$target_commit" ]]; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            if ! git merge --no-ff --no-commit "$target_commit"; then
+
+            # Apply the upstream tree with the recorded tag as the explicit
+            # merge base, but do not import upstream commits into the candidate
+            # history. The job-scoped GitHub App token cannot push commits that
+            # modify workflow files, even when the final tree restores them.
+            merge_status=0
+            git merge-recursive "$current_commit" -- HEAD "$target_commit" \
+              || merge_status=$?
+            mapfile -d '' -t merge_conflicts \
+              < <(git diff --name-only --diff-filter=U -z)
+            if [[ $merge_status -ne 0 && ${#merge_conflicts[@]} -eq 0 ]]; then
+              echo "The upstream three-way merge failed without leaving conflicts." >&2
+              exit "$merge_status"
+            fi
+
+            # Workflow definitions are downstream-owned. Resolve any workflow
+            # conflicts and discard clean upstream workflow changes before
+            # asking Copilot to handle the remaining source conflicts.
+            git restore --source=HEAD --staged --worktree -- .github/workflows
+            mapfile -d '' -t merge_conflicts \
+              < <(git diff --name-only --diff-filter=U -z)
+            if [[ ${#merge_conflicts[@]} -ne 0 ]]; then
               bash .github/scripts/resolve-upstream-merge-conflicts.sh \
                 "$current_tag" "$upstream_tag"
             fi

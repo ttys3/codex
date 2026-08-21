@@ -101,7 +101,7 @@ copilot_args=(
   --no-color
   --no-custom-instructions
   --disable-builtin-mcps
-  "--available-tools=view,grep,glob,edit,apply_patch"
+  "--available-tools=view,grep,glob,edit"
 )
 for path in "${copilot_paths[@]}"; do
   copilot_args+=(--allow-tool="write($path)")
@@ -143,7 +143,7 @@ for path in "${copilot_paths[@]}"; do
     echo "Copilot removed a conflicted file: $path" >&2
     exit 1
   fi
-  if rg -n '^(<<<<<<< |=======|>>>>>>> )' -- "$path"; then
+  if LC_ALL=C grep -nE '^(<<<<<<< |=======|>>>>>>> )' -- "$path"; then
     echo "Copilot left merge markers in $path" >&2
     exit 1
   fi
