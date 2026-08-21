@@ -23,6 +23,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  CODEX_REPO_ROOT: ${{ github.workspace }}
   DOWNSTREAM_BRANCH: downstream/statusline
   UPSTREAM_REPOSITORY: openai/codex
 
