@@ -98,7 +98,6 @@ copilot_args=(
   --max-ai-credits 30
   --no-ask-user
   --no-auto-update
-  --no-banner
   --no-color
   --no-custom-instructions
   --disable-builtin-mcps
