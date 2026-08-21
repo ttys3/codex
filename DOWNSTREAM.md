@@ -64,7 +64,11 @@ tag. A manual run can select a prerelease tag and a downstream revision.
 
 The workflow creates a temporary candidate branch and merges only forward from the recorded
 upstream tag, judging forward by semantic version rather than by history. It then validates the
-patch and builds exactly these release packages:
+patch and builds exactly these release packages. The expected workspace-version conflict is
+resolved deterministically. Up to six remaining text conflicts can be resolved by GitHub Copilot
+CLI using the job-scoped `GITHUB_TOKEN` and the repository owner's Copilot allowance, capped at 30
+AI credits per run. Copilot can write only the original conflict paths; unresolved or invalid
+output stops the release before a candidate branch is pushed.
 
 - `linux-amd64` (`x86_64-unknown-linux-musl`)
 - `linux-arm64` (`aarch64-unknown-linux-musl`)

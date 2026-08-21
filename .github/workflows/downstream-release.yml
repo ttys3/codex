@@ -33,6 +33,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
+      copilot-requests: write
     outputs:
       candidate_branch: ${{ steps.candidate.outputs.candidate_branch }}
       candidate_sha: ${{ steps.candidate.outputs.candidate_sha }}
@@ -50,6 +51,7 @@ jobs:
         id: candidate
         shell: bash
         env:
+          COPILOT_GITHUB_TOKEN: ${{ github.token }}
           GH_TOKEN: ${{ github.token }}
           REQUESTED_REVISION: ${{ github.event.inputs.revision || '1' }}
           REQUESTED_TAG: ${{ github.event.inputs.upstream_tag || '' }}
@@ -129,18 +131,8 @@ jobs:
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             if ! git merge --no-ff --no-commit "$target_commit"; then
-              # Both release commits rewrite the workspace version, so that line
-              # collides on every upstream bump. Upstream owns the field; take its
-              # value as long as the fork has kept its hands off the file.
-              unmerged="$(git diff --name-only --diff-filter=U)"
-              if [[ "$unmerged" != "codex-rs/Cargo.toml" ]] \
-                || ! git diff --quiet "$current_tag" HEAD -- codex-rs/Cargo.toml; then
-                echo "Merging $upstream_tag into $DOWNSTREAM_BRANCH left conflicts in:" >&2
-                awk '{ print "  " $0 }' <<< "$unmerged" >&2
-                exit 1
-              fi
-              git checkout --theirs -- codex-rs/Cargo.toml
-              git add -- codex-rs/Cargo.toml
+              bash .github/scripts/resolve-upstream-merge-conflicts.sh \
+                "$current_tag" "$upstream_tag"
             fi
             printf '%s\n' "$upstream_tag" > "$marker_file"
             git add "$marker_file"
