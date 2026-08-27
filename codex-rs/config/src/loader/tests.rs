@@ -14,9 +14,29 @@ use codex_utils_path_uri::PathUri;
 use pretty_assertions::assert_eq;
 use tempfile::tempdir;
 
-#[test]
-fn project_status_line_command_is_ignored_without_removing_status_line_items() {
-    let mut config: TomlValue = toml::from_str(
+#[tokio::test]
+async fn project_status_line_command_is_ignored_without_removing_status_line_items() {
+    let tmp = tempdir().expect("tempdir");
+    let codex_home = tmp.path().join("codex-home");
+    let project = tmp.path().join("project");
+    let dot_codex = project.join(".codex");
+    let system_dir = tmp.path().join("system");
+    let managed_dir = tmp.path().join("managed");
+    for dir in [&codex_home, &dot_codex, &system_dir, &managed_dir] {
+        std::fs::create_dir_all(dir).expect("create fixture directory");
+    }
+    std::fs::write(project.join(".project-root"), "").expect("write project marker");
+
+    let project_key = TomlValue::String(project_trust_key(&project)).to_string();
+    std::fs::write(
+        codex_home.join(CONFIG_TOML_FILE),
+        format!(
+            "project_root_markers=[\".project-root\"]\n[projects.{project_key}]\ntrust_level=\"trusted\""
+        ),
+    )
+    .expect("write user config");
+    std::fs::write(
+        dot_codex.join(CONFIG_TOML_FILE),
         r#"
 [tui]
 status_line = ["model", "custom-command"]
@@ -25,21 +45,44 @@ status_line = ["model", "custom-command"]
 command = ["sh", "-c", "printf unsafe"]
 "#,
     )
-    .expect("project config TOML");
+    .expect("write project config");
+
+    let system_file = system_dir.join(CONFIG_TOML_FILE);
+    let managed_file = managed_dir.join("managed_config.toml");
+    let requirements_file = managed_dir.join("requirements.toml");
+    for file in [&system_file, &managed_file, &requirements_file] {
+        std::fs::write(file, "").expect("write empty config fixture");
+    }
+
+    let mut overrides = LoaderOverrides::with_managed_config_path_for_tests(managed_file);
+    overrides.system_config_path = Some(system_file);
+    overrides.system_requirements_path = Some(requirements_file);
+    let cwd = AbsolutePathBuf::from_absolute_path(&project).expect("absolute cwd");
+    let layers = local::load_local_config_layers_with_overrides(
+        &TestFileSystem,
+        &codex_home,
+        &cwd,
+        &overrides,
+    )
+    .await
+    .expect("load local layers");
+    let project_config = &layers
+        .config
+        .layers
+        .iter()
+        .find(|layer| matches!(layer.source, ConfigLayerSource::Project { .. }))
+        .expect("project config layer")
+        .toml;
 
     assert_eq!(
-        sanitize_project_config(&mut config),
-        vec!["tui.status_line_command".to_string()]
-    );
-    assert_eq!(
-        config
-            .get("tui")
-            .and_then(TomlValue::as_table)
-            .and_then(|tui| tui.get("status_line")),
-        Some(&TomlValue::Array(vec![
-            TomlValue::String("model".to_string()),
-            TomlValue::String("custom-command".to_string()),
-        ]))
+        project_config,
+        &toml::from_str::<TomlValue>(
+            r#"
+[tui]
+status_line = ["model", "custom-command"]
+"#,
+        )
+        .expect("expected project config")
     );
 }
 
