@@ -3524,6 +3524,37 @@
       },
       "type": "object"
     },
+    "SleepToolConfigToml": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "mode": {
+          "$ref": "#/definitions/SleepToolMode"
+        }
+      },
+      "type": "object"
+    },
+    "SleepToolMode": {
+      "description": "How the sleep tool is selected when its feature gate is enabled.",
+      "oneOf": [
+        {
+          "description": "Preserve the existing model and legacy clock configuration defaults.",
+          "enum": [
+            "model_driven"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Register sleep regardless of the model or legacy clock configuration.",
+          "enum": [
+            "always_on"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "StatusLineCommandConfig": {
       "additionalProperties": false,
       "description": "A command whose first non-empty stdout line is rendered by the `custom-command` status-line item.",
@@ -3555,37 +3586,6 @@
         "command"
       ],
       "type": "object"
-    },
-    "SleepToolConfigToml": {
-      "additionalProperties": false,
-      "properties": {
-        "enabled": {
-          "type": "boolean"
-        },
-        "mode": {
-          "$ref": "#/definitions/SleepToolMode"
-        }
-      },
-      "type": "object"
-    },
-    "SleepToolMode": {
-      "description": "How the sleep tool is selected when its feature gate is enabled.",
-      "oneOf": [
-        {
-          "description": "Preserve the existing model and legacy clock configuration defaults.",
-          "enum": [
-            "model_driven"
-          ],
-          "type": "string"
-        },
-        {
-          "description": "Register sleep regardless of the model or legacy clock configuration.",
-          "enum": [
-            "always_on"
-          ],
-          "type": "string"
-        }
-      ]
     },
     "ThreadStoreToml": {
       "oneOf": [
