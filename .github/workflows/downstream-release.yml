@@ -175,9 +175,79 @@ jobs:
             echo "upstream_tag=$upstream_tag"
           } >> "$GITHUB_OUTPUT"
 
+  normalize_schema:
+    name: Normalize generated config schema
+    needs: prepare
+    if: needs.prepare.outputs.skip != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    outputs:
+      candidate_sha: ${{ steps.candidate.outputs.candidate_sha }}
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.prepare.outputs.candidate_sha }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - uses: ./.github/actions/setup-ci
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+
+      # The candidate merge can combine an upstream-generated schema with
+      # downstream-only config fields without reproducing the exact schema for
+      # the merged Rust types. Cache only the registry here; persisting another
+      # full target directory would compete with the release build caches.
+      - uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
+        with:
+          workspaces: codex-rs
+          cache-targets: false
+          cache-bin: false
+
+      - name: Install Linux schema dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            libcap-dev \
+            pkg-config
+
+      - name: Regenerate and commit config schema
+        id: candidate
+        shell: bash
+        env:
+          CANDIDATE_BRANCH: ${{ needs.prepare.outputs.candidate_branch }}
+          UPSTREAM_TAG: ${{ needs.prepare.outputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+          just write-config-schema
+
+          if ! git -C "$GITHUB_WORKSPACE" diff --quiet -- codex-rs/core/config.schema.json; then
+            git -C "$GITHUB_WORKSPACE" config user.name "github-actions[bot]"
+            git -C "$GITHUB_WORKSPACE" config user.email \
+              "41898282+github-actions[bot]@users.noreply.github.com"
+            git -C "$GITHUB_WORKSPACE" add codex-rs/core/config.schema.json
+            git -C "$GITHUB_WORKSPACE" commit \
+              -m "chore(config): regenerate schema for $UPSTREAM_TAG" \
+              -m "Co-Authored-By: Codex (gpt-5.6-sol) <noreply@openai.com>"
+            git -C "$GITHUB_WORKSPACE" push origin \
+              "HEAD:refs/heads/$CANDIDATE_BRANCH"
+          fi
+
+          candidate_sha="$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)"
+          echo "candidate_sha=$candidate_sha" >> "$GITHUB_OUTPUT"
+
   verify:
     name: Verify downstream patch
-    needs: prepare
+    needs:
+      - prepare
+      - normalize_schema
     if: needs.prepare.outputs.skip != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -189,7 +259,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ needs.prepare.outputs.candidate_sha }}
+          ref: ${{ needs.normalize_schema.outputs.candidate_sha }}
           persist-credentials: false
 
       - uses: ./.github/actions/setup-ci
@@ -227,13 +297,6 @@ jobs:
       - name: Check Rust formatting
         run: cargo fmt -- --config imports_granularity=Item --check
 
-      - name: Check generated config schema
-        shell: bash
-        run: |
-          set -euo pipefail
-          just write-config-schema
-          git -C "$GITHUB_WORKSPACE" diff --exit-code -- codex-rs/core/config.schema.json
-
       - name: Test status-line extensions
         run: just test -p codex-tui status_line_extensions
 
@@ -257,7 +320,9 @@ jobs:
 
   build:
     name: Build ${{ matrix.platform }}
-    needs: prepare
+    needs:
+      - prepare
+      - normalize_schema
     if: needs.prepare.outputs.skip != 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout_minutes }}
@@ -288,7 +353,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ needs.prepare.outputs.candidate_sha }}
+          ref: ${{ needs.normalize_schema.outputs.candidate_sha }}
           persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
@@ -543,7 +608,9 @@ jobs:
 
   build_macos_arm64:
     name: Build macos-arm64 on Linux arm64
-    needs: prepare
+    needs:
+      - prepare
+      - normalize_schema
     if: needs.prepare.outputs.skip != 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 90
@@ -566,7 +633,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ needs.prepare.outputs.candidate_sha }}
+          ref: ${{ needs.normalize_schema.outputs.candidate_sha }}
           persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
@@ -748,11 +815,13 @@ jobs:
     name: Publish downstream release
     needs:
       - prepare
+      - normalize_schema
       - verify
       - build
       - build_macos_arm64
     if: >-
       needs.prepare.outputs.skip != 'true' &&
+      needs.normalize_schema.result == 'success' &&
       needs.verify.result == 'success' &&
       needs.build.result == 'success' &&
       needs.build_macos_arm64.result == 'success'
@@ -763,7 +832,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ needs.prepare.outputs.candidate_sha }}
+          ref: ${{ needs.normalize_schema.outputs.candidate_sha }}
           fetch-depth: 0
           persist-credentials: true
 
@@ -810,7 +879,7 @@ jobs:
       - name: Fast-forward maintained branch
         shell: bash
         env:
-          CANDIDATE_SHA: ${{ needs.prepare.outputs.candidate_sha }}
+          CANDIDATE_SHA: ${{ needs.normalize_schema.outputs.candidate_sha }}
         run: |
           set -euo pipefail
           git fetch origin "$DOWNSTREAM_BRANCH"
@@ -823,7 +892,7 @@ jobs:
       - name: Create annotated release tag
         shell: bash
         env:
-          CANDIDATE_SHA: ${{ needs.prepare.outputs.candidate_sha }}
+          CANDIDATE_SHA: ${{ needs.normalize_schema.outputs.candidate_sha }}
           RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
           UPSTREAM_TAG: ${{ needs.prepare.outputs.upstream_tag }}
         run: |

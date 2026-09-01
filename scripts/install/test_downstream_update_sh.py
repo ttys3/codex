@@ -286,9 +286,7 @@ class DownstreamUpdateShTest(unittest.TestCase):
             write_official_release(root, "0.147.0")
             write_release(root, "statusline-v0.147.0-r1", "0.147.0")
 
-            result = run_updater(
-                root, current, "0.146.0", "statusline-v0.146.0-r4"
-            )
+            result = run_updater(root, current, "0.146.0", "statusline-v0.146.0-r4")
 
             self.assertEqual(result.returncode, 0, result.stderr)
             assert_complete_install(self, root, current, "0.147.0")
@@ -311,9 +309,7 @@ class DownstreamUpdateShTest(unittest.TestCase):
             write_official_release(root, "0.147.0")
             write_release(root, "statusline-v0.147.0-r2", "0.147.0")
 
-            result = run_updater(
-                root, current, "0.147.0", "statusline-v0.147.0-r1"
-            )
+            result = run_updater(root, current, "0.147.0", "statusline-v0.147.0-r1")
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("statusline-v0.147.0-r2", result.stdout)
@@ -327,9 +323,7 @@ class DownstreamUpdateShTest(unittest.TestCase):
             write_official_release(root, "0.147.0")
             write_release(root, "statusline-v0.147.0-r2", "0.147.0")
 
-            result = run_updater(
-                root, current, "0.147.0", "statusline-v0.147.0-r2"
-            )
+            result = run_updater(root, current, "0.147.0", "statusline-v0.147.0-r2")
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("Repaired downstream Codex package", result.stdout)
@@ -381,9 +375,7 @@ class DownstreamUpdateShTest(unittest.TestCase):
             write_official_release(root, "0.147.0")
             write_release(root, "statusline-v0.146.0-r9", "0.146.0")
 
-            result = run_updater(
-                root, current, "0.146.0", "statusline-v0.146.0-r4"
-            )
+            result = run_updater(root, current, "0.146.0", "statusline-v0.146.0-r4")
 
             self.assertEqual(result.returncode, 1)
             self.assertEqual(current.read_bytes(), original)
@@ -403,9 +395,7 @@ class DownstreamUpdateShTest(unittest.TestCase):
                 include_host=False,
             )
 
-            result = run_updater(
-                root, current, "0.146.0", "statusline-v0.146.0-r4"
-            )
+            result = run_updater(root, current, "0.146.0", "statusline-v0.146.0-r4")
 
             self.assertEqual(result.returncode, 1)
             self.assertEqual(current.read_bytes(), original)
@@ -428,9 +418,7 @@ class DownstreamUpdateShTest(unittest.TestCase):
                 installed_version="9.9.9",
             )
 
-            result = run_updater(
-                root, current, "0.146.0", "statusline-v0.146.0-r4"
-            )
+            result = run_updater(root, current, "0.146.0", "statusline-v0.146.0-r4")
 
             self.assertEqual(result.returncode, 1)
             self.assertFalse(current.is_symlink())
