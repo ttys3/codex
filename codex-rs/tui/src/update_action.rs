@@ -14,6 +14,8 @@ const DOWNSTREAM_UPDATE_SCRIPT: &[u8] =
 /// Update action the CLI should perform after the TUI exits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateAction {
+    /// Replace the local daemon after restoring the terminal.
+    Daemon(DaemonUpdateSource),
     /// Update via `npm install -g @openai/codex@latest`.
     NpmGlobalLatest,
     /// Update via `bun install -g @openai/codex@latest`.
@@ -64,6 +66,7 @@ impl UpdateAction {
     /// Returns the list of command-line arguments for invoking the update.
     pub fn command_args(self) -> (&'static str, &'static [&'static str]) {
         match self {
+            UpdateAction::Daemon(source) => ("codex", source.command_args()),
             UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "@openai/codex"]),
             UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@openai/codex"]),
             UpdateAction::VitePlusGlobalLatest => ("vp", &["install", "-g", "@openai/codex"]),
@@ -263,5 +266,21 @@ mod tests {
             UpdateAction::DownstreamStandaloneUnix.command_str(),
             "codex update"
         );
+    }
+}
+
+/// Package source explicitly selected by the user in the daemon menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DaemonUpdateSource {
+    PublicStable,
+    ThisCli,
+}
+
+impl DaemonUpdateSource {
+    pub fn command_args(self) -> &'static [&'static str] {
+        match self {
+            Self::PublicStable => &["app-server", "daemon", "update"],
+            Self::ThisCli => &["app-server", "daemon", "update", "--from-cli", "--yes"],
+        }
     }
 }
